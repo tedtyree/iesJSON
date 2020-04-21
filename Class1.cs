@@ -1214,38 +1214,64 @@ namespace iesJSONlib
             return bDefault;
         }
 
-        // ToArray() - Get the current value in the form of an Array
+        // ToArray() - Get the current value in the form of an Array - non-Destructive
         // If item is already an array it returns "this" (full object)
         // If item is a null, a null array is returned (array with no elements)
         // If item is an Object and...
         //     flagConvertObjects=false then the object is returned as an object
         //     flagConvertObjects=true then the object is converted to an array
-        //         WARNING: THIS ALTERS THE PARENT OBJECT - CLONE THE ITEM TO KEEP FROM MODIFYING PARENT
+        //         WARNING: MAY CLONE THE ITEM TO KEEP FROM MODIFYING PARENT
         // If item is an element (string,int,etc) it returns an array containing this single element
-        // NOTE! This function should not be confused with ConvertToArray
-        public iesJSON ToArray(bool flagConvertObjects = false)
+        // NOTE! This function should not be confused with ConvertToArray (which changes the iesJSON object. ie Destructive)
+        //
+        // cloneArray causes an Array or Object to be cloned into an Array (so that if it gets modified down the pipe line, you are not destroying the parent)
+        public iesJSON ToArray(bool flagConvertObjects = false, bool cloneArray=false)
         {
             switch (this.jsonType)
             {
                 case "array":
-                    return this;
-                    break;
-                case "object":
-                    if (flagConvertObjects)
-                    {
-                        this.ConvertToArray();
+                    if (cloneArray) {
+                        return this.Clone();
                     }
                     return this;
-                    break;
+                case "object":
+                    if (flagConvertObjects || cloneArray)
+                    {
+                        iesJSON newArray=this.Clone();
+                        newArray.ConvertToArray();
+                        return newArray;
+                    }
+                    return this;
                 case "null":
                     iesJSON returnArray2 = new iesJSON("[]");
                     return returnArray2;
-                    break;
                 default:
                     iesJSON returnArray3 = new iesJSON("[]");
                     returnArray3.AddToArrayBase(this);
                     return returnArray3;
-                    break;
+            }
+        }
+
+        // ToArrayWithSplit() - Return an array or a SPLIT of a string
+        // Used for FLEX JSON config files so that the file can contain
+        //   either an Array or a Comma separated list in string format
+        // eg. the following two lines produce the same result...
+        //   fields:[id,title,status]
+        //   fields:"id,title,status"
+        //
+        // Also, note that the following line still returns an array with a single item
+        //   fields:"id"
+        public iesJSON ToArrayWithSplit(char SplitChar=',', bool cloneArray=false) {
+            switch (this.jsonType)
+            {
+                case "string":
+                    iesJSON newArray = new iesJSON("[]");
+                    foreach(string item in this.ToStr().Split(SplitChar)) {
+                        newArray.Add(item);
+                    }
+                    return newArray;
+                default:
+                    return this.ToArray(true,cloneArray);
             }
         }
 
