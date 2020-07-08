@@ -3501,13 +3501,31 @@ namespace iesJSONlib
         public int RemoveFromObj(string strReference, string sParam)
         {
             if (stats != null) { IncStats("stat_RemoveFromObj"); }
-            return AddToObj(strReference, sParam, "", -1);
+            // return AddToObj(strReference, sParam, "", -1); // Old method
+            iesJSON v = null;
+            v = GetObj(strReference);
+            if (v != null) {
+                return v.RemoveFromBase(sParam);
+            }
+            return -2; // Invalid strReference
         } // End Function
 
         public int RemoveFromBase(string sParam)
         {
             if (stats != null) { IncStats("stat_RemoveFromBase"); }
-            return AddToObjBase(sParam, "", -1);
+            // return AddToObjBase(sParam, "", -1); // Old method
+
+            // *** Requires that this is a json "object"
+            if (_jsonType != "object") { return -3; }
+            if (string.IsNullOrWhiteSpace(sParam)) { return -4; }  //  Key must be set to a valid 'key' string
+            int k = this.IndexOfKey(sParam);
+            if (k >=0) { 
+                if (this.RemoveAtBase(k) == true) {
+                    return 0; // OK
+                }
+                return -9; // other error
+            }
+            return -1; // Key not found
         } // End Function
 
         public bool Exists(string strReference)
