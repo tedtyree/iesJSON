@@ -3207,6 +3207,7 @@ namespace iesJSONlib
         }
 
         // Remove an item from the current object (assuming it is an ARRAY or OBJECT)
+        // WARNING: should NOT remove from an iesJSON Object that you are iterating through (it messes with the enum)
         public bool RemoveAtBase(int AtPosition)
         {
             if (stats != null) { IncStats("stat_RemoveAtBase"); }
@@ -3510,6 +3511,7 @@ namespace iesJSONlib
             return -2; // Invalid strReference
         } // End Function
 
+        // WARNING: should NOT remove from an iesJSON Object that you are iterating through (it messes with the enum)
         public int RemoveFromBase(string sParam)
         {
             if (stats != null) { IncStats("stat_RemoveFromBase"); }
