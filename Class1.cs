@@ -64,27 +64,8 @@ namespace iesJSONlib
     using System.IO;
     //using Newtonsoft.Json;
 
-    public class iesJSON : IEnumerable, IComparable
+    public static class iesJsonConstants 
     {
-
-        // *** if value_valid=false and jsonString_valid=false then this JSON Object is null (not set to anything)
-        private int _status = 0;  // *** 0=OK, anything else represents an error/invalid status
-
-        //FUTURE: REMOVE THESE ONCE THE stats OBJECT IS IMPLEMENTED
-        private string _statusMsg = "";  // *** Error message will be included in the stats object (if there is an error)
-        public string tmpStatusMsg = ""; // DEBUG DEBUG DEBUG
-
-        private string _jsonType = "";  // object, array, string, number, boolean, null, error
-        private string _key = null;  // only used for JSON objects.  all other _jsonType values will have a key value of null
-        private object _value = null;
-        private bool _value_valid = false;
-        private string _jsonString = "";
-        private bool _jsonString_valid = false;
-        public int endpos = 0;
-        public iesJSON Parent;
-        public bool ALLOW_SINGLE_QUOTE_STRINGS = true;
-        public bool ENCODE_SINGLE_QUOTES = false;
-
         // jsonTypeEnum Values - Numeric representation of jsonType
         //NOTE: The NUMBER VALUES are critical to the SORT() routine
         //  So that iesJSON arrays get sorted in this order: NULL, Number, String, Boolean, Array, Object, Error
@@ -97,36 +78,116 @@ namespace iesJSONlib
         public const int jsonTypeEnum_error = 90;
         public const int jsonTypeEnum_invalid = 99;
 
-        // The _keep object is normally NULL indicating that no spacing or comments should be captured or rendered
-        // When/if this object gets created, it will include flags to indicate if the object is intended to keep spacing and/or comments
+        // Indicates status of deserialize process.  
+        // Order of numbers is important! (because we check for _status >= ST_STRING)
+        public const int ST_BEFORE_ITEM=0;
+        public const int ST_EOL_COMMENT=1;
+        public const int ST_AST_COMMENT=2;
+        public const int ST_EOL_COMMENT_POST=3;
+        public const int ST_AST_COMMENT_POST=4;
+        public const int ST_STRING=10;
+        public const int ST_STRING_NO_QUOTE=12;
+        public const int ST_AFTER_ITEM=99;
+
+        public const string NEWLINE="\r\n";
+
+        public const string typeObject = "object";
+        public const string typeArray = "array";
+        public const string typeString = "string";
+        public const string typeNumber = "number";
+        public const string typeBoolean = "boolean";
+        public const string typeNull = "null";
+
+    }
+
+    public class iesJsonMeta
+    {
+        public string statusMsg = null;
+        public string tmpStatusMsg = null;
+        public iesJSON msgLog = null;
+        public bool msgLogOn = false;
+        public iesJsonPosition errorPosition = null;  // indicator of error position during deserialization process
+        public iesJsonPosition startPosition = null;  // indicator of start position during deserialization process
+        public iesJsonPosition endPosition = null;  // indicator of final position during deserialization process
+
+        // When/if this object exists, it will include flags to indicate if the object is intended to keep spacing and/or comments
         //   keepSpacing - false=DO NOT preserve spacing, true=Preserve spacing including carriage returns
         //   keepComments - false=DO NOT preseerve comments, true=Preserve comments in Flex JSON
         // NOTE: These flags only have an affect during the deserialize process.
-        // NEW: KEEP feature also retains the lineNumber and the linePosition of each iesJSON item during the parse process
         // FUTURE: How to clear spacing/comments after the load?  (set _keep to null? or just keep/pre/post attributes) Make this recursive to sub-objects?
         // FUTURE: Flag to keep double/single quotes or no-quotes for Flex JSON (and write back to file using same quotes or no-quote per item)
-        private iesJSON _keep = null;
+        public bool keepSpacing = false;
+        public bool keepComments = false;
+        public string preSpace = null;
+        public string finalSpace = null;
+        public string preKey = null;
+        public string postKey = null;
+        public iesJSON stats = null;  // null indicates we are not tracking stats.  stats object will also be created if an error occurs - to hold the error message.
+    }
+
+    public class iesJsonPosition
+    {
+        public int lineNumber;
+        public int linePosition;
+        public int absolutePosition;
+
+        public iesJsonPosition(int initLineNumber, int initLinePosition, int initAbsolutePosition) {
+            lineNumber = initLineNumber;
+            linePosition = initLinePosition;
+            absolutePosition = initAbsolutePosition;
+        }
+            
+        public void increment(int positionIncrement = 1) {
+            linePosition += positionIncrement;
+            absolutePosition += positionIncrement;
+        }
+
+        // IncrementLine() - tracks the occurrance of a line break.
+        // AbsoluteIncrement must be provided because on some systems line breaks are 2 characters
+        public void incrementLine(int absoluteIncrement, int lineIncrement = 1) {
+            lineNumber += lineIncrement;
+            linePosition = 0;
+            absolutePosition += absoluteIncrement;
+        }
+    }
+
+    public class iesJSON : IEnumerable, IComparable
+    {
+
+        // *** if value_valid=false and jsonString_valid=false then this JSON Object is null (not set to anything)
+        private int _status = 0;  // *** 0=OK, anything else represents an error/invalid status
+        private string _jsonType = "";  // object, array, string, number, boolean, null, error
+        private string _key = null;  // only used for JSON objects.  all other _jsonType values will have a key value of null
+        private object _value = null;
+        private bool _value_valid = false;
+        private string _jsonString = "";
+        private bool _jsonString_valid = false;
+
+        public iesJSON Parent;
+        public bool ALLOW_SINGLE_QUOTE_STRINGS = true;
+        public bool ENCODE_SINGLE_QUOTES = false;
+
         private bool _UseFlexJson = false;  //FUTURE: FlexJson should also change the way we serialize.  Right now it only changes the way we deserialize 03/2015
 
-        public iesJSON stats = null;  // null indicates we are not tracking stats.  stats object will also be created if an error occurs - to hold the error message.
+        public iesJsonMeta _meta = null; // object is only created when needed
         private bool _NoStatsOrMsgs = false;  // This flag is necessary so that the stats do not track stats. (set to True for stats object)
                                               // Below are the stats that will be included in the stats object.
-                                              //FUTURE: REMOVE THESE ONCE THE stats OBJECT IS IMPLEMENTED
         /*
-            public int stat_clear=0;
-            public int stat_clearFromSelf=0;
-            public int stat_clearFromOther=0;
-            public int stat_serialize=0;
-            public int stat_serializeme=0;
-            public int stat_Deserialize=0;
-            public int stat_DeserializeMe=0;
-            public int stat_getobj=0;
-            public int stat_invalidate=0;
-            public int stat_invalidateFromSelf=0;
-            public int stat_invalidateFromChild=0;
-            public int stat_invalidateFromOther=0;
+            stat_clear: count of number of times clear was called
+            stat_clearFromSelf: count of number of times clear was called internally
+            stat_clearFromOther: count of number of times clear was called externally
+            stat_serialize: count of times serialize was called
+            stat_serializeme: count of times serializeMe was called
+            stat_deserialize: count of times deserialize was called
+            stat_deserializeMe: count of times deserializeMe was called
+            stat_getobj: count of times getObj was called
+            stat_invalidate: count of times invalidate was called
+            stat_invalidateFromSelf: count of times invalidate was called internally
+            stat_invalidateFromChild: count of times invalidate was called from child object
+            stat_invalidateFromOther: count of times invalidate was called externally
         */
 
+        // =========================================================================================
         // CONSTRUCTORS - includes ability to initialize the JSON object with a JSON string for example j=new iesJSON("{}");
         public iesJSON() { /* nothign to do here */ }
         public iesJSON(bool UseFlexJsonFlag, string InitialJSON)
@@ -143,6 +204,227 @@ namespace iesJSONlib
             UseFlexJson = UseFlexJsonFlag;
         }
 
+        // =========================================================================================
+        // META DATA
+
+        public void createMetaIfNeeded(bool force = false) {
+            if (_NoStatsOrMsgs && !force) { return; } // Do not track stats/message/meta-data
+            if (_meta == null) { _meta = new iesJsonMeta(); }
+        }
+
+        public void clearMeta() {
+            _meta = null;
+        }
+
+        public void createStatsIfNeeded() {
+            createMetaIfNeeded();
+            if (_meta == null) { return; }
+            if (_meta.stats == null) { _meta.stats = CreateEmptyObject(); }
+        }
+
+        public void clearStats() {
+            if (_meta == null) { return; }
+            _meta.stats = null;
+        }
+
+        public void createMsgLogIfNeeded() {
+            createMetaIfNeeded();
+            if (_meta == null) { return; }
+            if (_meta.msgLog == null) { _meta.msgLog = CreateEmptyArray(); }
+        }
+
+        public void clearMsgLog() {
+            if (_meta == null) { return; }
+            _meta.msgLog = null;
+        }
+
+        public void addStat(string key, int stat) {
+            if (NoStatsOrMsgs) { return; }
+            createStatsIfNeeded();
+            if(_meta != null) {
+                if(_meta.stats != null) {
+                    _meta.stats.Add(key,stat);
+                }
+            }
+        }
+
+        public bool trackingStats {
+            get {
+                if (_meta == null) return false;
+                if (_meta.stats == null) return false;
+                return true;
+            }
+        }
+
+        public string statusMsg
+        {
+            get {
+                if (_meta != null) {
+                    if (_meta.statusMsg != null) { return _meta.statusMsg; }
+                }
+                return "";
+            }
+            set {
+                if (NoStatsOrMsgs) { return; }
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.statusMsg = value; }
+                if (_meta.msgLogOn) {
+                    if (_meta != null) { _meta.msgLog.Add(value); }
+                }
+            }
+        }
+
+        public string tmpStatusMsg
+        {
+            get {
+                if (_meta != null) {
+                    if (_meta.tmpStatusMsg != null) { return _meta.tmpStatusMsg; }
+                }
+                return "";
+            }
+            set {
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.tmpStatusMsg = value; }
+            }
+        }
+
+        public string preSpace
+        {
+            get {
+                if (_meta != null) {
+                    if (_meta.preSpace != null) { return _meta.preSpace; }
+                }
+                return "";
+            }
+            set {
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.preSpace = value; }
+            }
+        }
+
+        public string finalSpace
+        {
+            get {
+                if (_meta != null) {
+                    if (_meta.finalSpace != null) { return _meta.finalSpace; }
+                }
+                return "";
+            }
+            set {
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.finalSpace = value; }
+            }
+        }
+
+        public string preKey
+        {
+            get {
+                if (_meta != null) {
+                    if (_meta.preKey != null) { return _meta.preKey; }
+                }
+                return "";
+            }
+            set {
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.preKey = value; }
+            }
+        }
+
+        public string postKey
+        {
+            get {
+                if (_meta != null) {
+                    if (_meta.postKey != null) { return _meta.postKey; }
+                }
+                return "";
+            }
+            set {
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.postKey = value; }
+            }
+        }
+
+        public bool keepSpacing
+        {
+            get {
+                if (_meta != null) { return _meta.keepSpacing; }
+                return false;
+            }
+            set {
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.keepSpacing = value; }
+            }
+        }
+
+        public bool keepComments
+        {
+            get {
+                if (_meta != null) { return _meta.keepComments; }
+                return false;
+            }
+            set {
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.keepComments = value; }
+            }
+        }
+
+        public bool msgLogOn
+        {
+            get {
+                if (_meta != null) { return _meta.msgLogOn; }
+                return false;
+            }
+            set {
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.msgLogOn = value; }
+            }
+        }
+
+        public iesJsonPosition StartPosition
+        {
+            get {
+                if (_meta != null) { 
+                    if (_meta.startPosition != null) { 
+                        return _meta.startPosition; }}
+                return new iesJsonPosition(-1,-1,-1);
+            }
+            set {
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.startPosition = value; }
+            }
+        }
+
+        public iesJsonPosition EndPosition
+        {
+            get {
+                if (_meta != null) { 
+                    if (_meta.endPosition != null) {
+                        return _meta.endPosition; } }
+                return new iesJsonPosition(-1,-1,-1);
+            }
+            set {
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.endPosition = value; }
+            }
+        }
+
+        public iesJsonPosition ErrorPosition
+        {
+            get {
+                if (_meta != null) { 
+                    if (_meta.errorPosition != null) {
+                        return _meta.errorPosition; }}
+                return new iesJsonPosition(-1,-1,-1);
+            }
+            set {
+                createMetaIfNeeded();
+                if (_meta != null) { _meta.errorPosition = value; }
+            }
+        }
+
+        // =========================================================================================
+        // CREATE OBJECTs/ARRAYs/ITEMs
+
         // CreateEmptyObject()
         // This accomplishes the same thing as iesJSON("{}") but avoids recursive loops within the class by simply setting up the Object without any parsing.
         // This is also faster than calling iesJSON("{}")
@@ -150,7 +432,7 @@ namespace iesJSONlib
         {
             iesJSON j = new iesJSON();
             j._value = new System.Collections.Generic.List<object>();
-            j._jsonType = "object";
+            j._jsonType = iesJsonConstants.typeObject;
             j._value_valid = true;
             j._jsonString = "{}";
             j._jsonString_valid = false;
@@ -279,6 +561,10 @@ namespace iesJSONlib
             }
             return j;
         }
+
+
+        // =========================================================================================
+        // THIS
 
         // NOTE: The reason we can create a generic "this" enumerator such as...
         //   public object this [int index]
@@ -454,7 +740,7 @@ namespace iesJSONlib
         //FUTURE: May want to clear any string values in _keep... but need to retain _keep object and _keep parameters
         public void Clear(bool ClearParent = true, int src = 0, bool bClearStats = false)
         {
-            if (stats != null)
+            if (trackingStats)
             {
                 if (bClearStats)
                 {
@@ -472,7 +758,7 @@ namespace iesJSONlib
             _value = null;
             _value_valid = false;
             InvalidateJsonString(src); // *** Resets _jsonString and _jsonString_valid (and notifies Parent of changes)
-            endpos = 0;
+            _meta = null;
             if (ClearParent) { Parent = null; }
         } // End Clear()
 
@@ -487,7 +773,7 @@ namespace iesJSONlib
         //public void InvalidateJsonString(int src) {
         public void InvalidateJsonString(int src = 0)
         {
-            if (stats != null)
+            if (trackingStats)
             {
                 IncStats("stat_Invalidate");
                 if (src == 0) { IncStats("stat_InvalidateFromOther"); }
@@ -505,7 +791,14 @@ namespace iesJSONlib
         // If an object is passed in, then all stats are added to that object AND the same object is returned.
         // If a null is passed in, then we create an iesJSON to return.
         // This allows the method to be used as and "Add" or a "Get".
-        public string GetStatsBase22() { if (stats == null) { return null; } else { return stats.jsonString; } }
+        public string GetStatsBase22() { 
+            if (!trackingStats) { return null; } 
+            else { 
+                if (_meta == null) { return null; }
+                if (_meta.stats == null) { return null; }
+                return _meta.stats.jsonString; 
+                } 
+            }
 
         //DEFAULT PARAMETERS
         //public iesJSON GetStatsBase() { return GetStatsBase(null, false); }
@@ -518,7 +811,7 @@ namespace iesJSONlib
         public iesJSON GetStatsBase(iesJSON addToJSON, bool DoNotReturnNull = false)
         {
             iesJSON j;
-            if (stats == null)
+            if (!trackingStats)
             {
                 if (!DoNotReturnNull) { return null; }
                 else { j = CreateEmptyObject(); j.NoStatsOrMsgs = true; return j; }
@@ -527,7 +820,7 @@ namespace iesJSONlib
             if (j == null) { j = CreateEmptyObject(); j.NoStatsOrMsgs = true; }
 
             double d; string k;
-            foreach (object o in stats)
+            foreach (object o in _meta.stats)
             {
                 iesJSON p;
                 p = (iesJSON)o;
@@ -576,7 +869,7 @@ namespace iesJSONlib
         //public iesJSON Clone(bool BuildValue,bool BuildString) {
         public iesJSON Clone(bool BuildValue = true, bool BuildString = true)
         {
-            if (stats != null) { IncStats("stat_Clone"); }
+            if (trackingStats) { IncStats("stat_Clone"); }
             iesJSON j = new iesJSON();
             j.UseFlexJson = UseFlexJson;
             j.ALLOW_SINGLE_QUOTE_STRINGS = ALLOW_SINGLE_QUOTE_STRINGS;
@@ -593,7 +886,7 @@ namespace iesJSONlib
         //public bool CloneTo(iesJSON toJSONobj, bool BuildValue,bool BuildString) {
         public bool CloneTo(iesJSON toJSONobj, bool BuildValue = true, bool BuildString = true)
         {
-            if (stats != null) { IncStats("stat_CloneTo"); }
+            if (trackingStats) { IncStats("stat_CloneTo"); }
             if (toJSONobj == null) { return false; }
             try
             {
@@ -621,7 +914,6 @@ namespace iesJSONlib
                 {
                     k = ((iesJSON)o).Key;
                     t = ((iesJSON)o).jsonType;
-                    iesJSON kp = ((iesJSON)o)._keep;
                     if (c > 0) { s.Append("<br>\n"); }
                     z = "";
                     switch (t)
@@ -641,27 +933,19 @@ namespace iesJSONlib
                     // Include Comments and Spacing if specified...
                     if (includeSpacingComments)
                     {
-                        if (!(kp == null))
-                        {
-                            if (kp["keepSpacing"].ToBool() || kp["keepComments"].ToBool())
-                            {
-                                z = "";
-                                z = kp.GetStr("preKey");
-                                if (!(z == "")) { s.Append("[preKey]" + EncodeString(z) + "<br>\n"); }
-                                z = "";
-                                z = kp.GetStr("postKey");
-                                if (!(z == "")) { s.Append("[postKey]" + EncodeString(z) + "<br>\n"); }
-                                z = "";
-                                z = kp.GetStr("preSpace");
-                                if (!(z == "")) { s.Append("[preSpace]" + EncodeString(z) + "<br>\n"); }
-                                z = "";
-                                z = kp.GetStr("postSpace");
-                                if (!(z == "")) { s.Append("[postSpace]" + EncodeString(z) + "<br>\n"); }
-                                z = "";
-                                z = kp.GetStr("finalSpacing");
-                                if (!(z == "")) { s.Append("[finalSpacing]" + EncodeString(z) + "<br>\n"); }
-                            }
-                        }
+                        z = "";
+                        z = preKey;
+                        if (!(z == "")) { s.Append("[preKey]" + EncodeString(z) + "<br>\n"); }
+                        z = "";
+                        z = postKey;
+                        if (!(z == "")) { s.Append("[postKey]" + EncodeString(z) + "<br>\n"); }
+                        z = "";
+                        z = preSpace;
+                        if (!(z == "")) { s.Append("[preSpace]" + EncodeString(z) + "<br>\n"); }
+                        z = "";
+                        z = finalSpace;
+                        if (!(z == "")) { s.Append("[finalSpacing]" + EncodeString(z) + "<br>\n"); }
+
                     }
                     c = c + 1;
                 } // end foreach
@@ -675,28 +959,23 @@ namespace iesJSONlib
             // Include Comments and Spacing if specified...
             if (includeSpacingComments)
             {
-                if (!(_keep == null))
-                {
                     if (this.keepSpacing || this.keepComments)
                     {
                         ret += "<br>\n";
                         z = "";
-                        z = _keep.GetStr("preKey");
+                        z = preKey;
                         if (!(z == "")) { s.Append("[preKey]" + EncodeString(z) + "<br>\n"); }
                         z = "";
-                        z = _keep.GetStr("postKey");
+                        z = postKey;
                         if (!(z == "")) { s.Append("[postKey]" + EncodeString(z) + "<br>\n"); }
                         z = "";
-                        z = _keep.GetStr("preSpace");
+                        z = preSpace;
                         if (!(z == "")) { ret += "[preSpace]" + EncodeString(z) + "<br>\n"; }
                         z = "";
-                        z = _keep.GetStr("postSpace");
-                        if (!(z == "")) { ret += "[postSpace]" + EncodeString(z) + "<br>\n"; }
-                        z = "";
-                        z = _keep.GetStr("finalSpacing");
+                        z = finalSpace;
                         if (!(z == "")) { ret += "[finalSpacing]" + EncodeString(z) + "<br>\n"; }
                     }
-                }
+                
             }
 
             return ret;
@@ -710,7 +989,7 @@ namespace iesJSONlib
 
             s.Append(linePrefix + "============================ " + _jsonType + " HEADER " + lineSeparator);
             s.Append(linePrefix + "_status:" + _status.ToString() + lineSeparator);
-            s.Append(linePrefix + "_statusMsg:\"" + _statusMsg + "\"" + lineSeparator);
+            s.Append(linePrefix + "_statusMsg:\"" + statusMsg + "\"" + lineSeparator);
             s.Append(linePrefix + "tmpStatusMsg:\"" + tmpStatusMsg + "\"" + lineSeparator);
             s.Append(linePrefix + "_jsonType:" + _jsonType + lineSeparator);
             s.Append(linePrefix + "_key:" + _key + lineSeparator);
@@ -733,7 +1012,7 @@ namespace iesJSONlib
             s.Append(linePrefix + "_value_valid:" + _value_valid.ToString() + lineSeparator);
             s.Append(linePrefix + "_jsonString:\"" + _jsonString + "\"" + lineSeparator);
             s.Append(linePrefix + "_jsonString_valid:" + _jsonString_valid.ToString() + lineSeparator);
-            s.Append(linePrefix + "endpos:" + endpos.ToString() + lineSeparator);
+            s.Append(linePrefix + "endpos:" + EndPosition.ToString() + lineSeparator);
             if (Parent == null) { s.Append(linePrefix + "Parent: <null>" + lineSeparator); }
             else { s.Append(linePrefix + "Parent: <object>" + lineSeparator); }
             s.Append(linePrefix + "ALLOW_SINGLE_QUOTE_STRINGS:" + ALLOW_SINGLE_QUOTE_STRINGS.ToString() + lineSeparator);
@@ -742,24 +1021,24 @@ namespace iesJSONlib
             try
             {
                 s.Append(linePrefix + "_UseFlexJson:" + _UseFlexJson.ToString() + lineSeparator);
-                if (_keep == null)
-                {
-                    s.Append(linePrefix + "_keep: <null> " + lineSeparator);
-                }
-                else
-                {
-                    s.Append(linePrefix + "------------------------- _keep:" + lineSeparator);
-                    s.Append(_keep.GetAllParams(lineSeparator, linePrefix + ">>"));
-                }
+                
+                if (_meta != null) {
+                    s.Append(linePrefix + "------------------------- keep:" + lineSeparator);
+                    s.Append(linePrefix + ">> preSpace:" + preSpace + lineSeparator);
+                    s.Append(linePrefix + ">> finalSpace:" + finalSpace + lineSeparator);
+                    s.Append(linePrefix + ">> preKey:" + preKey + lineSeparator);
+                    s.Append(linePrefix + ">> postKey:" + postKey + lineSeparator);
+                
 
-                if (stats == null)
-                {
-                    s.Append(linePrefix + "stats: <null> " + lineSeparator);
-                }
-                else
-                {
-                    s.Append(linePrefix + "------------------------- stats:" + lineSeparator);
-                    s.Append(stats.GetAllParams(lineSeparator, linePrefix + ">>"));
+                    if (!trackingStats)
+                    {
+                        s.Append(linePrefix + "stats: <null> " + lineSeparator);
+                    }
+                    else
+                    {
+                        s.Append(linePrefix + "------------------------- stats:" + lineSeparator);
+                        s.Append(_meta.stats.GetAllParams(lineSeparator, linePrefix + ">>"));
+                    }
                 }
 
                 if ((_jsonType == "object") || (_jsonType == "array"))
@@ -791,7 +1070,7 @@ namespace iesJSONlib
         {
             get
             {
-                if (stats != null) { IncStats("stat_jsonString_get"); }
+                if (trackingStats) { IncStats("stat_jsonString_get"); }
                 if (_status != 0) { return (""); } // *** ERROR - status is invalid
                 if (!_jsonString_valid)
                 {
@@ -815,7 +1094,7 @@ namespace iesJSONlib
             }
             set
             {
-                if (stats != null) { IncStats("stat_jsonString_set"); }
+                if (trackingStats) { IncStats("stat_jsonString_set"); }
                 if ((_status == 0) && (_jsonString_valid) && (_jsonString == value))
                 {
                     return;
@@ -830,47 +1109,15 @@ namespace iesJSONlib
         } // End Property jsonString()
 
 
-        public bool keepSpacing
-        {
-            get
-            {
-                if (_keep == null) { return false; }
-                return _keep.GetBool("keepSpacing");
-            }
-            set
-            {
-                if (value) { keepSpacingAndComments(1, -1); }
-                else { keepSpacingAndComments(0, -1); }
-            }
-        }
-
-        public bool keepComments
-        {
-            get
-            {
-                if (_keep == null) { return false; }
-                return _keep.GetBool("keepComments");
-            }
-            set
-            {
-                if (value) { keepSpacingAndComments(-1, 1); }
-                else { keepSpacingAndComments(-1, 0); }
-            }
-        }
-
         // keepSpacingAndComments() - setsup the spacing/comments object used for Flex config files
         //   flag values: -1 leave default value, 0 Set to FALSE, 1 Set to TRUE
+        //  NOTE: Only works if NoCommentsOrMsgs is set to false
         public void keepSpacingAndComments(int spacing_flag = -1, int comments_flag = -1)
         {
-            if (_keep == null)
-            {
-                // Need to create object - NOTE: Default settings are FALSE for both keepSpacing and keepComments
-                _keep = new iesJSON("{\"keepSpacing\":false,\"keepComments\":false}");
-            }
-            if (spacing_flag == 0) { _keep["keepSpacing"].Value = false; }
-            if (spacing_flag == 1) { _keep["keepSpacing"].Value = true; }
-            if (comments_flag == 0) { _keep["keepComments"].Value = false; }
-            if (comments_flag == 1) { _keep["keepComments"].Value = true; }
+            if (spacing_flag == 0) { keepSpacing= false; }
+            if (spacing_flag == 1) { keepSpacing = true; }
+            if (comments_flag == 0) { keepComments = false; }
+            if (comments_flag == 1) { keepComments = true; }
         }
 
         public void keepSpacingAndComments(bool spacing_flag, bool comments_flag)
@@ -922,13 +1169,10 @@ namespace iesJSONlib
             }
 
             // Check to see if _keep is already defined - if not, create it
-            if (_keep == null)
-            {
-                this.keepSpacingAndComments(); // leave defaults
-            }
+            this.keepSpacingAndComments(); // leave defaults
 
             // Get current pre/post spacing and comments
-            string currKeep = null;
+            //string currKeep = null;
             string addToToken = null;
             if (addAfter)
             {
@@ -947,15 +1191,15 @@ namespace iesJSONlib
                 addToToken += "Key";
             }
 
-            // Add Comment/Spacing to current object
+            /* Add Comment/Spacing to current object - FUTURE: New way to approach this?
             currKeep = _keep[addToToken].ToStr();
             currKeep += addString;
             _keep[addToToken].Value = currKeep;
-
+            */ 
             return true;
         }
 
-
+/* FUTURE - find new way to approach this??? ...
         public int LineNumber  // Indicates on which line this item was found during parse
         {
             get
@@ -980,7 +1224,7 @@ namespace iesJSONlib
             if (_keep == null) { return -1; }
             return _keep["AbsolutePosition"].ToInt(-1);
         }
-
+*/
 
         // ItemAt returns an iesJSON node from a specific index which can be an: object, array, string, number, bool, or null
         // This is the same as iesJSON[index] where index is an integer
@@ -1093,7 +1337,7 @@ namespace iesJSONlib
         {
             get
             {
-                if (stats != null) { IncStats("stat_Value_get"); }
+                if (trackingStats) { IncStats("stat_Value_get"); }
                 if (!ValidateValue()) { return null; }  // *** Unable to validate/Deserialize the value
                                                         // If object or array, return null
                 if (_jsonType == "object" && _jsonType == "array") { return null; }
@@ -1101,7 +1345,7 @@ namespace iesJSONlib
             } //End get
             set
             {
-                if (stats != null) { IncStats("stat_Value_set"); }
+                if (trackingStats) { IncStats("stat_Value_set"); }
                 iesJSON o = CreateItem(value);
                 this.ReplaceAt(0, o);
             }
@@ -1126,7 +1370,7 @@ namespace iesJSONlib
         //public string ToStr(string sDefault) {
         public string ToStr(string sDefault = "")
         {  // NOTE! Changed this from "ToString" to "ToStr" (Meaning Convert-to-String) because several times the compiler mixed up this function (named "ToString") with string.ToString() or object.ToString() methods
-            if (stats != null) { IncStats("stat_ValueString_get"); }
+            if (trackingStats) { IncStats("stat_ValueString_get"); }
             if (!ValidateValue()) { return sDefault; } // Error - invalid value - return default
             if (_status != 0 || _jsonType == "object" || _jsonType == "array") { return sDefault; }
             if (_jsonType == "boolean") { return _value.ToString().ToLower(); }
@@ -1146,7 +1390,7 @@ namespace iesJSONlib
         //public int ToInt(int nDefault) {
         public int ToInt(int nDefault = 0)
         {
-            if (stats != null) { IncStats("stat_ValueInt_get"); }
+            if (trackingStats) { IncStats("stat_ValueInt_get"); }
             if (!ValidateValue()) { return nDefault; } // Error - invalid value - return false
             if (_status != 0 || _jsonType == "object" || _jsonType == "array") { return nDefault; }
             if (_jsonType == "boolean")
@@ -1174,7 +1418,7 @@ namespace iesJSONlib
         //public double ToDbl(double dDefault) {
         public double ToDbl(double dDefault = 0d)
         {
-            if (stats != null) { IncStats("stat_ValueDbl_get"); }
+            if (trackingStats) { IncStats("stat_ValueDbl_get"); }
             if (!ValidateValue()) { return dDefault; } // Error - invalid value - return false
             if (_status != 0 || _jsonType == "object" || _jsonType == "array") { return dDefault; }
             if (_jsonType == "boolean") { return System.Convert.ToDouble((bool)_value); }
@@ -1198,7 +1442,7 @@ namespace iesJSONlib
         //public bool ToBool(bool bDefault) {
         public bool ToBool(bool bDefault = false)
         {
-            if (stats != null) { IncStats("stat_ValueBool_get"); }
+            if (trackingStats) { IncStats("stat_ValueBool_get"); }
             if (!ValidateValue()) { return bDefault; } // Error - invalid value - return false
             if (_status != 0 || _jsonType == "object" || _jsonType == "array") { return bDefault; }
             if (_jsonType == "boolean") { return (bool)_value; }
@@ -1280,7 +1524,7 @@ namespace iesJSONlib
         {
             get
             {
-                if (stats != null) { IncStats("stat_ValueArray_get"); }
+                if (trackingStats) { IncStats("stat_ValueArray_get"); }
                 if (!ValidateValue())
                 {
                     return null;  // *** Unable to validate/Deserialize the value
@@ -1424,31 +1668,28 @@ namespace iesJSONlib
         {
             get
             {
-                if (stats != null)
-                {
-                    return true;
-                }
-                else
-                {
-                    return false;
-                }
+                if (trackingStats) { return true; }
+                else { return false; }
             }
 
             set
             {
                 if ((value) && (!_NoStatsOrMsgs))
                 {
-                    if (stats == null)
+                    createMetaIfNeeded();
+                    if (_meta != null)
                     {
                         // turning on stats
-                        stats = CreateEmptyObject();
-                        stats.NoStatsOrMsgs = true;
+                        _meta.stats = CreateEmptyObject();
+                        _meta.stats.NoStatsOrMsgs = true; // don't track the stats within the stats object - might get recursive
                     }
                 }
                 else
                 {
-                    // turning off stats
-                    stats = null;
+                    if (_meta != null) {
+                        // turning off stats
+                        _meta.stats = null;
+                    }
                 }
             }
         } // End Property TracksStats()
@@ -1513,9 +1754,10 @@ namespace iesJSONlib
             if (newStatus == 0) { _status = -999; }
         }
 
+        // FUTURE: Retire this property and just use statusMsg?
         public string StatusMessage
         {  // Gets the most recent error message.  stats contains a list of error messages.
-            get { return _statusMsg; }
+            get { return statusMsg; }
         } // End Property
 
         public string jsonType
@@ -1536,21 +1778,21 @@ namespace iesJSONlib
                 switch (_jsonType)
                 {
                     case "null":
-                        return jsonTypeEnum_null;
+                        return iesJsonConstants.jsonTypeEnum_null;
                     case "number":
-                        return jsonTypeEnum_number;
+                        return iesJsonConstants.jsonTypeEnum_number;
                     case "string":
-                        return jsonTypeEnum_string;
+                        return iesJsonConstants.jsonTypeEnum_string;
                     case "boolean":
-                        return jsonTypeEnum_boolean;
+                        return iesJsonConstants.jsonTypeEnum_boolean;
                     case "array":
-                        return jsonTypeEnum_array;
+                        return iesJsonConstants.jsonTypeEnum_array;
                     case "object":
-                        return jsonTypeEnum_object;
+                        return iesJsonConstants.jsonTypeEnum_object;
                     case "error":
-                        return jsonTypeEnum_error;
+                        return iesJsonConstants.jsonTypeEnum_error;
                     default: // This should never occur - invalid jsonType
-                        return jsonTypeEnum_invalid;
+                        return iesJsonConstants.jsonTypeEnum_invalid;
                 } // end switch
             } // end get
         }
@@ -1579,7 +1821,8 @@ namespace iesJSONlib
         // ***   if this item starts with a [ then it is an array and must end with a ] and anything past that is ignored
         // ***   Other options are String (must be surrounded with quotes), Integer, Boolean, or Null
         // ***   null (all white space) creates an error
-        // ***
+        // *** If ReturnToParent = true, then we stop as soon as we find the end of the item, and return the remainder of the text to the parent for further processing
+        // *** If MustBeString = true, then we are looking for the "string" as the name for a name/value pair (within an object)
         // *** returns 0=Successful, anything else represents an invalid status
         // ***
         //DEFAULT-PARAMETERS
@@ -1588,587 +1831,643 @@ namespace iesJSONlib
         //public int Deserialize(string snewString, int start, bool OkToClip) {
         public int Deserialize(string snewString, int start = 0, bool OkToClip = false)
         {
-            if (stats != null) { IncStats("stat_Deserialize"); }
-            //tmpStatusMsg=tmpStatusMsg + "DEBUG: Deserialize<br>";
+            if (trackingStats) { IncStats("stat_Deserialize"); }
             Clear(false, 1);
             _jsonString = snewString;
             _jsonString_valid = true;
 
-            return DeserializeMe(start, OkToClip);
+            iesJsonPosition startPos = new iesJsonPosition(0,start,start);
+            // FUTURE: determine start position LINE COUNT???
+            // if (start>0) { lineCount = countLines(ref _jsonString, start); }
+
+            DeserializeMeI(ref _jsonString, startPos, OkToClip);
+            return _status;
         } // End Function
 
-        //DEFAULT-PARAMETERS
-        //public int DeserializeMe() { return DeserializeMe(0, false); }
-        //public int DeserializeMe(int start) { return DeserializeMe(start, false); }
-        //public int DeserializeMe(int start, bool OkToClip) {
-        public int DeserializeMe(int start = 0, bool OkToClip = false)
+        public int DeserializeFlex(string snewString, int start = 0, bool OkToClip = false)
         {
-            string c;
+            UseFlexJson = true;
+            return Deserialize(snewString, start = 0, OkToClip = false);
+        } // End Function
+
+        //DeserializeMe() was written as a temporary UPGRADE to deserialize based on a linear scan of a string.
+        //   NOTE: If start is indicated, then the line count may be off.
+        //public int DeserializeMe2() { return DeserializeMe2(0, false); }
+        //public int DeserializeMe2(int start) { return DeserializeMe2(start, false); }
+        //public int DeserializeMe2(int start, bool OkToClip) {
+        public int DeserializeMe(int start = 0, bool OkToClip = false) {
+            // FUTURE: determine start position LINE COUNT???
+            // if (start>0) { lineCount = countLines(ref _jsonString, start); }
+            iesJsonPosition startPos = new iesJsonPosition(0,start,start);
+            DeserializeMeI(ref _jsonString, startPos, OkToClip);
+            return _status;
+        }
+
+        //DeserializeMeI() - internal recursive engine for deserialization.
+        // SearchFor1/2/3 = indicates the next character the parent is searching for. '*' = disabled
+        // NOTE: parent JSON string is passed BY REF to reduce the number of times we have to 'copy' the json string.  At the end of the deserialization process, this
+        //    routine will store the section of the myJsonString that is consumed into its own _jsonString
+        private iesJsonPosition DeserializeMeI(ref string meJsonString, iesJsonPosition start, bool OkToClip = false, bool MustBeString = false, char SearchFor1 = '*', char SearchFor2 = '*', char SearchFor3 = '*') {
+            char c;
+            string c2;
             bool keepSP = false;
             bool keepCM = false;
             StringBuilder getSpace = null;
-            if (stats != null) { IncStats("stat_DeserializeMe"); }
-
-            if (!_jsonString_valid)
-            {
-                // *** We can only Deserialize if the jsonString is filled in.  return error.
-                _status = -99;
-                AddStatusMessage("ERROR: Cannot DeserializeMe() because jsonString is not set.  [err-99]");
-                return _status;
-            }
+            StringBuilder meString = null;
+            if (trackingStats) { IncStats("stat_DeserializeMeI"); }
 
             _status = 0;
+            StartPosition = start;  // store in meta (if ok to do so)
+            int meStatus = iesJsonConstants.ST_BEFORE_ITEM;
+            char quoteChar = ' ';
             _key = null; // *** Default
             _value = null; // *** Default
             _value_valid = false; // *** In case of error, default is invalid
-            endpos = start;
-            if (_keep != null)
-            {
-                keepSP = this.keepSpacing;
-                keepCM = this.keepComments;
+            _jsonType = iesJsonConstants.typeNull; // default
+            int jsonEndPoint = meJsonString.Length-1;
+            // endpos = start;
+            iesJsonPosition mePos = start;  // USE THIS TO TRACK POSITION, THEN SET endpos ONCE DONE OR ON ERROR
+            keepSP = this.keepSpacing;
+            keepCM = this.keepComments;
+            if (keepSP || keepCM) {
                 getSpace = new StringBuilder();
             }
-            findnext(keepSP, keepCM, ref getSpace);
-            //tmpStatusMsg+="[DeserializeMe.findnext][keepSP=" + keepSP.ToString() + "][keepCM=" + keepCM.ToString() + "]"; // DEBUG
-            //if (_keep!=null) { tmpStatusMsg+="[preSpace=" + _keep.GetStr("preSpace") + "]"; } // DEBUG
-            //if (getSpace!=null) {tmpStatusMsg+="[getSpace=" + getSpace.ToString() + "]";} // DEBUG
-            if (keepSP || keepCM)
-            {
-                AddSpaceAndClear(_keep, "preSpace", ref getSpace);
-                AddLinePosition(_keep, endpos);
-            }
 
-            // *** Check for zero length string (null)
-            if (endpos >= _jsonString.Length)
-            {
-                _jsonType = "string"; // FUTURE: Why is this not a null?
-                _value = "";
-                _value_valid = true;
-                goto Done_Deserialization;
-            }
+            //iesJsonPosition startOfMe = null;
+            int safety = jsonEndPoint+999;
+            bool ok = false;
+            while (meStatus >= 0 && _status >= 0 && mePos.absolutePosition <= jsonEndPoint) {
+                c = meJsonString[mePos.absolutePosition];
+                if (mePos.absolutePosition < jsonEndPoint) { c2=substr(meJsonString,mePos.absolutePosition,2); } else { c2 = ""; }
 
-            // *** Check for Array or Object or String
-            c = substr(_jsonString, endpos, 1);
-            if (c == "{") { DeserializeObject(keepSP, keepCM); }
-            if (c == "[") { DeserializeArray(keepSP, keepCM); }
-            if (c == "\"") { DeserializeMeAsString(c); }
-            if (ALLOW_SINGLE_QUOTE_STRINGS && c == "'") { DeserializeMeAsString(c); }
-            if (_jsonType != "") { goto Done_Deserialization; }
-
-            // *** Check to see if it is a Boolean value: true or false
-            if (substr(_jsonString, endpos, 4).ToLower() == "true")
-            {
-                _jsonType = "boolean";
-                _value = true;
-                _value_valid = true;
-                endpos = endpos + 4;
-                goto Done_Deserialization;
-            }
-            if (substr(_jsonString, endpos, 5).ToLower() == "false")
-            {
-                _jsonType = "boolean";
-                _value = false;
-                _value_valid = true;
-                endpos = endpos + 5;
-                goto Done_Deserialization;
-            }
-
-            // *** Check to see if it is a NULL value
-            if (substr(_jsonString, endpos, 4).ToLower() == "null")
-            {
-                _jsonType = "null";
-                _value = null;
-                _value_valid = true;
-                endpos = endpos + 4;
-                goto Done_Deserialization;
-            }
-
-            // Check to see if this is a FLEX JSON string or a NUMBER
-            findstring();
-            //findnumber();
-
-            c = substr(_jsonString, start, endpos - start).Trim();
-            if (c == "")
-            {
-                _status = -11;
-                //THIS IS NOT NECESSARILY AN ERROR! MAY BE A NORMAL END TO A SECTION OF THE JSON STRING
-                _value = null;
-                _jsonType = "null";
-                goto Done_Deserialization;
-            }
-
-            // *** determine if this is a number by trying to parse it...
-            try
-            {
-                double valueCheck;
-                if (Double.TryParse(c, out valueCheck))
-                {
-                    _value = valueCheck;
-
-                    // It worked... keep going...
-                    _jsonType = "number";
-                    _value_valid = true;
-                    goto Done_Deserialization;
-                }
-                else
-                {
-                    // value isn't a double, consider it a string
-                    _value = c;
-                    _jsonType = "string";
-                    _value_valid = true;
-                    goto Done_Deserialization;
-                }
-            }
-            catch
-            {
-                if (_UseFlexJson)
-                {
-                    _value = c;
-                    _jsonType = "string";
-                    _value_valid = true;
-                    goto Done_Deserialization;
-                }
-                _value = null; //parse did not work
-            }
-            // *** Was not a number or string - error
-            _status = -12; // *** Invalid string/format found
-            AddStatusMessage("Invalid Format - String/Number/Boolean/Null not found [c=" + c + ",flex=" + _UseFlexJson.ToString() + "]");
-
-        //	Done_StringNumber:
-        //		if (substr(_jsonString,endpos,2).ToLower()=="/*") {
-        //			findcommentend();
-        //			// DO STUFF HERE - FUTURE
-        //			}
-
-        Done_Deserialization:
-            // *** Check if there is anything left at the end of the string... if so, then this was not valid JSON (or we are mid-string in parsing the json string)
-            if (_status == 0 || _status == -11)
-            {
-                _value_valid = true;
-                if (OkToClip)
-                {
-                    _jsonString = substr(_jsonString, start, endpos - start);
-                }
-                else
-                {
-                    findnext(keepSP, keepCM, ref getSpace);  // This not only removes remaining spaces, but also skips comments if it is Flex Json
-                    if (keepSP || keepCM)
-                    {
-                        AddSpaceAndClear(_keep, "postSpace", ref getSpace);
-                    }
-                    if (!(endpos > _jsonString.Length))
-                    {
-                        if (substr(_jsonString, endpos).Trim() != "") { _status = -1; } // *** Indicates that the json syntax is wrong - there are characters past the end of the JSON - if you don't care, then set the OkToClip flag
-                                                                                        // If keep spacing/comment flag set, then store the remainder
-                        if (keepSP || keepCM)
-                        {
-                            //_keep["finalSpace"].Value=substr(_jsonString,endpos);
-                            AddSpace(_keep, "finalSpace", substr(_jsonString, endpos));
+                switch (meStatus) {
+                    case iesJsonConstants.ST_BEFORE_ITEM:
+                        if (c!='*' || c==SearchFor1) { break; }  // Found search character
+                        if (c!='*' || c==SearchFor2) { break; }  // Found search character
+                        if (c!='*' || c==SearchFor3) { break; }  // Found search character
+                        if (c==' ' || c=='\t' || c=='\n' || c=='\r') { // white space before item
+                            ok = true;
+                            if(keepSP) { getSpace.Append(c); }
                         }
-                    }
-                }
-            }
-            else
-            {
-                _jsonString = ""; // safety to make sure we do not recusively try to re-interpret the json string
-            }
-            // *** WE MUST LEAVE endpos FOR REFERENCE!  (this is the endpos of the ORIGINAL string... not the clipped end-result
-            return (_status);
-        } // End Function
-
-        private void DeserializeMeAsString(string endChar)
-        {
-            int dsErr = 0; string dsErrMsg = "";
-            _value = DeserializeString(_jsonString, endChar, 1, ref endpos, ref dsErr, dsErrMsg);
-            if (dsErr == 0)
-            {
-                _jsonType = "string";
-                _value_valid = true;
-            }
-            else { StatusErr(dsErr, dsErrMsg); }
-        }
-
-        static public string DeserializeString(string js, string endChar, int FirstCharFlag)
-        {
-            int iPos = 0, dsErr = 0; string dsErrMsg = "";
-            return DeserializeString(js, endChar, FirstCharFlag, ref iPos, ref dsErr, dsErrMsg);
-        }
-
-        static public string DeserializeString(string js, string endChar, int FirstCharFlag, ref int pos)
-        {
-            int dsErr = 0; string dsErrMsg = "";
-            return DeserializeString(js, endChar, FirstCharFlag, ref pos, ref dsErr, dsErrMsg);
-        }
-
-        // DeserializeString()
-        // FirstCharFlag: 0=There is no quote character to skip, 1=Skip first character which is a quote, 2=Use first character as the endChar
-        // endChar: ""=do not look for an end character (process entire string).  If endChar is set to a character, look for that character as an end of string. (usually a quote)
-        static public string DeserializeString(string js, string endChar, int FirstCharFlag, ref int pos, ref int dsErr, string dsErrMsg)
-        {
-            int st; string c; bool brk = false; string endChar2;
-            System.Text.StringBuilder w = new System.Text.StringBuilder();
-
-            // *** For now we just do a quick search for end of string.  Future we need to expand for special escape characters.
-            if (FirstCharFlag == 2) { endChar2 = substr(js, pos, 1); }  // *** If specified, get first quote symbol
-            else { endChar2 = endChar; }
-            if (FirstCharFlag >= 1) { pos = pos + 1; }  // *** IMPORTANT! Move past first quote symbol
-            st = pos;
-            do
-            {
-                if (pos > js.Length)
-                {
-                    if (endChar2 != "")
-                    {
-                        dsErr = -33;
-                        dsErrMsg = "Found end of the buffer before finding the end quote @Line:" + currLine(pos, ref js) + " @Position:" + currLinePos(pos, ref js) + " (e-33)";
-                        // We still return the string even though it is missing the final quote.
-                    }
-                    break;
-                }
-                c = substr(js, pos, 1);
-                if (c == endChar2)
-                {
-                    // *** End quote found
-                    pos = pos + 1;
-                    break;
-                }
-                else
-                {
-                    switch (c)
-                    {
-                        case "\\":
-                            // *** Turn this into an escape character!
-                            pos = pos + 1;  // *** get next character
-                            c = substr(js, pos, 1);
+                        else if (c == '{') { 
+                            if (MustBeString) { 
+                                _status = -124;
+                                AddStatusMessage("Invalid character '{' found. Expected string. @Line:" + mePos.lineNumber + ", @Position:" + mePos.linePosition + " [err-124]");
+                                break;
+                                }
+                            ok=true; 
+                            //startOfMe=mePos; 
+                            _jsonType=iesJsonConstants.typeObject;
+                            mePos = DeserializeObject(ref meJsonString, mePos, keepSP, keepCM);
+                            meStatus = iesJsonConstants.ST_AFTER_ITEM;
+                            if (_status != 0) { break; } // ERROR message should have already been generated.
+                            }
+                        else if (c == '[') { 
+                            if (MustBeString) { 
+                                _status = -125;
+                                AddStatusMessage("Invalid character '[' found. Expected string. @Line:" + mePos.lineNumber + ", @Position:" + mePos.linePosition + " [err-125]");
+                                break;
+                                }
+                            ok=true; 
+                            //startOfMe=mePos; 
+                            _jsonType=iesJsonConstants.typeArray;
+                            mePos = DeserializeArray(ref meJsonString, mePos, keepSP, keepCM); 
+                            meStatus = iesJsonConstants.ST_AFTER_ITEM;
+                            if (_status != 0) { break; } // ERROR message should have already been generated.
+                            }
+                        else if (c == '"') { 
+                            ok=true; 
+                            //startOfMe=mePos; 
+                            _jsonType=iesJsonConstants.typeString;
+                            quoteChar='"'; 
+                            meStatus = iesJsonConstants.ST_STRING; 
+                            }
+                        else if (ALLOW_SINGLE_QUOTE_STRINGS && c == '\'') { 
+                            ok=true; 
+                            //startOfMe=mePos; 
+                            _jsonType=iesJsonConstants.typeString;
+                            quoteChar='\''; 
+                            meStatus = iesJsonConstants.ST_STRING; 
+                            }
+                        else if (_UseFlexJson) {
+                            if (c2==@"//") { // start of to-end-of-line comment
+                                ok=true;
+                                meStatus = iesJsonConstants.ST_EOL_COMMENT;
+                                mePos.increment(); // so we skip 2 characters
+                                if(keepCM) { getSpace.Append(c2); }
+                            }
+                            if (c2==@"/*") { // start of asterix comment
+                                ok=true;
+                                meStatus = iesJsonConstants.ST_AST_COMMENT;
+                                mePos.increment(); // so we skip 2 characters
+                                if(keepCM) { getSpace.Append(c2); }
+                            }
+                        }
+                        // With or without FlexJSON, we allow simple strings without quotes - cannot contain commas, spaces, special characters, etc
+                        // Later we will determine if this is a number, boolean, null, or unquoted-string (string is only allowed with FlexJSON)
+                        if ((c>='A' && c<='Z') || (c>='a' && c<='z') || (c>='0' && c<='9') || c=='-' || c=='_' || c=='.') {
+                                ok=true;
+                                //startOfMe=mePos;
+                                _jsonType="nqstring"; // NOTE! THIS IS NOT A REAL TYPE - IT IS A FLAG FOR LATER
+                                meStatus = iesJsonConstants.ST_STRING_NO_QUOTE;
+                        }
+                        if (!ok) { // generate error condition - invalid character
+                            _status = -102;
+                            AddStatusMessage("ERROR: Invalid charater.  [err-102]");
+                            break;
+                        }
+                        // if we are no longer in pre-space territory, the we need to store the whitespace/comments
+                        if (meStatus >= iesJsonConstants.ST_STRING) {
+                            preSpace = getSpace.ToString();
+                            getSpace.Length = 0; // clear
+                        }
+                        if (meStatus == iesJsonConstants.ST_STRING || meStatus == iesJsonConstants.ST_STRING_NO_QUOTE) {
+                            meString = new StringBuilder();
+                        }
+                        break;
+                    case iesJsonConstants.ST_AFTER_ITEM:
+                        if (c!='*' || c==SearchFor1) { break; }  // Found search character
+                        if (c!='*' || c==SearchFor2) { break; }  // Found search character
+                        if (c!='*' || c==SearchFor3) { break; }  // Found search character
+                        if (c==' ' || c=='\t' || c=='\n' || c=='\r') { // white space before item
+                            ok = true;
+                            if(keepSP) { getSpace.Append(c); }
+                        }
+                        if (_UseFlexJson) {
+                            if (c2==@"//") { // start of to-end-of-line comment
+                                ok=true;
+                                meStatus = iesJsonConstants.ST_EOL_COMMENT_POST;
+                                mePos.increment(); // so we skip 2 characters
+                                if(keepCM) { getSpace.Append(c2); }
+                            }
+                            if (c2==@"/*") { // start of asterix comment
+                                ok=true;
+                                meStatus = iesJsonConstants.ST_AST_COMMENT_POST;
+                                mePos.increment(); // so we skip 2 characters
+                                if(keepCM) { getSpace.Append(c2); }
+                            }
+                        }
+                        if (!ok) { // generate error condition (unless OKToClip)
+                            if (OkToClip) {
+                                // if we are keeping comments+ then we should probably grab this garbage text
+                                // This will allow us to modify a FlexJSON text file/block and write it back "AS IS"
+                                if(keepCM) { 
+                                    string finalGarbage = substr(meJsonString,mePos.absolutePosition,meJsonString.Length - mePos.absolutePosition);
+                                    getSpace.Append(finalGarbage); 
+                                    }
+                                break;
+                            }
+                            _status = -192;
+                            AddStatusMessage("ERROR: Additional text found after end of JSON.  [err-192]");
+                            break;
+                        }
+                        break;
+                    case iesJsonConstants.ST_EOL_COMMENT:
+                    case iesJsonConstants.ST_EOL_COMMENT_POST:
+                        if (c2==iesJsonConstants.NEWLINE) {
+                            ok = true;
+                            if(keepSP) { getSpace.Append(c2); }
+                            if (meStatus==iesJsonConstants.ST_EOL_COMMENT) { meStatus=iesJsonConstants.ST_BEFORE_ITEM; }
+                            else { meStatus=iesJsonConstants.ST_AFTER_ITEM; }
+                            mePos.incrementLine(2);
+                            continue; // NOTE: Here we must skip the end of the do loop so that we do not increment the counter again
+                        }
+                        else if (c=='\n' || c=='\r') {
+                            ok = true;
+                            if(keepSP) { getSpace.Append(c); }
+                            if (meStatus==iesJsonConstants.ST_EOL_COMMENT) { meStatus=iesJsonConstants.ST_BEFORE_ITEM; }
+                            else { meStatus=iesJsonConstants.ST_AFTER_ITEM; }
+                        }
+                        else { // absorb all comment characters
+                            ok = true;
+                            if(keepSP) { getSpace.Append(c); }
+                        }
+                        break;
+                    case iesJsonConstants.ST_AST_COMMENT:
+                    case iesJsonConstants.ST_AST_COMMENT_POST:
+                        if (c2==@"*/") {
+                            ok = true;
+                            if(keepSP) { getSpace.Append(c2); }
+                            if (meStatus==iesJsonConstants.ST_EOL_COMMENT) { meStatus=iesJsonConstants.ST_BEFORE_ITEM; }
+                            else { meStatus=iesJsonConstants.ST_AFTER_ITEM; }
+                            mePos.increment(); // increment by 1 here - increments again at bottom of do loop
+                        }
+                        else { // absorb all comment characters
+                            ok = true;
+                            if(keepSP) { getSpace.Append(c); }
+                        }
+                        break;
+                    case iesJsonConstants.ST_STRING:
+                        if (c==quoteChar) { // we reached the end of the string
+                            ok = true;
+                            meStatus = iesJsonConstants.ST_AFTER_ITEM;
+                        }
+                        else if (c=='\\') { // escaped character
+                            mePos.increment();
+                            c = meJsonString[mePos.absolutePosition];
                             switch (c)
                             {
-                                case "\\":
-                                case "/":
-                                case "'":
-                                case "\"":
-                                    w.Append(c);
+                                case '\\':
+                                case '/':
+                                case '\'':
+                                case '"':
+                                    meString.Append(c);
                                     break;
-                                case "t":
-                                    w.Append("\t"); //Tab character
+                                case 't':
+                                    meString.Append("\t"); //Tab character
                                     break;
-                                case "b":
-                                    w.Append(Convert.ToChar(8));
+                                case 'b':
+                                    meString.Append(Convert.ToChar(8));
                                     break;
-                                case "c":
-                                    w.Append(Convert.ToChar(13));
+                                case 'c':
+                                    meString.Append(Convert.ToChar(13));
                                     break;
-                                case "n":
-                                    w.Append("\n");  //New Line Character
+                                case 'n':
+                                    meString.Append("\n");  //New Line Character
                                     break;
-                                case "r":
-                                    w.Append("\r");  //LineFeedCarriageReturn
+                                case 'r':
+                                    meString.Append("\r");  //LineFeedCarriageReturn
                                     break;
-                                case "v":
-                                    w.Append("*");  // ***** FUTURE: Need to determine this character!
+                                case 'v':
+                                    meString.Append("*");  // ***** FUTURE: Need to determine this character!
                                     break;
-                                case "u":
+                                case 'u':
                                     // *** Here we need to get the next 4 digits and turn them into a character
-                                    c = substr(js, pos + 1, 4);
-                                    if (IsHex4(c))
+                                    if (mePos.absolutePosition > jsonEndPoint-4) {
+                                        _status = -157;
+                                        AddStatusMessage("ERROR: Invalid \\u escape sequence.  [err-157]");
+                                        break;;
+                                    }
+                                    c2 = substr(meJsonString, mePos.absolutePosition+1, 4);
+                                    if (IsHex4(c2))
                                     {
-                                        string asciiValue = System.Convert.ToChar(System.Convert.ToUInt32(c, 16)) + "";
-                                        w.Append(asciiValue);
-                                        pos = pos + 5;
+                                        // FUTURE-NEW!!! FIX THIS! TODO - NOW- PROBLEM!!!
+                                        string asciiValue = "####"; //System.Convert.ToChar(System.Convert.ToUInt32(c, 16)) + "";
+                                        meString.Append(asciiValue);
+                                        mePos.increment(4);
                                     }
                                     else
                                     {
                                         // *** Invalid format
-                                        dsErr = -51;
-                                        dsErrMsg = "Expected \\u escape sequence to be followed by a valid four-digit hex value @Line:" + currLine(pos, ref js) + " @Position:" + currLinePos(pos, ref js) + " (e-51)";
-                                        brk = true;
+                                        _status = -151;
+                                        AddStatusMessage("Expected \\u escape sequence to be followed by a valid four-digit hex value @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition + " (e-151)");
+                                        break;;
                                     }
                                     break;
                                 default:
                                     // *** Invalid format
-                                    dsErr = -52;
-                                    dsErrMsg = "The \\ escape character is not followed by a valid value @Line:" + currLine(pos, ref js) + " @Position:" + currLinePos(pos, ref js) + " (e-52)";
-                                    brk = true;
+                                    _status = -152;
+                                    AddStatusMessage("The \\ escape character is not followed by a valid value @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition + " (e-152)");
                                     break;
                             } //End switch
+                        }
+                        else {
+                            meString.Append(c);
+                        }
+                        break;
+                    case iesJsonConstants.ST_STRING_NO_QUOTE:
+                        if (c!='*' || c==SearchFor1) { break; }  // Found search character
+                        if (c!='*' || c==SearchFor2) { break; }  // Found search character
+                        if (c!='*' || c==SearchFor3) { break; }  // Found search character
+                        if ((c>='A' && c<='Z') || (c>='a' && c<='z') || (c>='0' && c<='9') || c=='-' || c=='_' || c=='.') {
+                            ok=true;
+                            meString.Append(c);
+                        }
+                        else if (c2==iesJsonConstants.NEWLINE) {  // consume this as whitespace
+                            ok=true;
+                            if (keepSP) { getSpace.Append(c2); }
+                            mePos.incrementLine(2);
+                            meStatus = iesJsonConstants.ST_AFTER_ITEM;
+                            continue; // so that we do not increment mePos again
+                        }
+                        else if (c==' ' || c=='\t' || c=='\r' || c=='\n') { // consume this as whitespace
+                            ok=true;
+                            if (keepSP) { getSpace.Append(c); }
+                            meStatus = iesJsonConstants.ST_AFTER_ITEM;
+                        }
+                        else { // not a valid character
+                            _status = -159;
+                            AddStatusMessage("Invalid character found in non-quoted string: char:[" + c + "] @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition + " (e-159)");
                             break;
-                        default:
-                            w.Append(c);
-                            break;
-                    } //End switch
-                } // end if (c==endChar)
-                pos = pos + 1;
-            } while (!brk);
-            return w.ToString();
-        } // End
+                        }
+                        break;
+                }
+                mePos.increment(); // move to next character
+                safety--;
+                if (safety<=0) { 
+                    _status = -169;
+                    AddStatusMessage("Maximum iterations reached: DeserializeMe(): @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition + " (e-169)");
+                    break; 
+                    }
+            }
 
-        private void DeserializeObject(bool keepSP, bool keepCM)
+            if (_status != 0) {
+              switch (_jsonType) {
+                case iesJsonConstants.typeString:
+                    _value = meString.ToString();
+                    break;
+                case "nqstring": // NOTE! This is objType must be converted to another type here! nqstring is not a real type.
+                    string tmpString = meString.ToString();  // do not need to trim since we should have consumed the whitespace in getSpace
+                    if (!MustBeString) {
+                        if (tmpString.Length < 7) {
+                            var tmpStringUpper = tmpString.ToUpper();
+                            if (string.IsNullOrWhiteSpace(tmpStringUpper) || tmpStringUpper == "NULL") {
+                                _value = "";
+                                _jsonType = iesJsonConstants.typeNull;
+                            }
+                            else if (tmpStringUpper == "TRUE") {
+                                _value = true;
+                                _jsonType = iesJsonConstants.typeBoolean;
+                            }
+                            else if (tmpStringUpper == "FALSE") {
+                                _value = false;
+                                _jsonType = iesJsonConstants.typeBoolean;
+                            }
+                        }
+                        // If the above did not match, lets see if this text is numeric...
+                        if (_jsonType=="nqstring") {
+                            try {
+                                double valueCheck;
+                                if (Double.TryParse(tmpString, out valueCheck))
+                                {
+                                    _value = valueCheck;
+
+                                    // It worked... keep going...
+                                    _jsonType = iesJsonConstants.typeNumber;
+                                }
+                            } catch(Exception) {}
+                        }
+                        
+                    }
+                    // If STILL not identified, then it must be a STRING (ONLY valid as an unquoted string if using FlexJson!)
+                    if (_jsonType=="nqstring") {
+                        _value = tmpString;
+                        _jsonType = iesJsonConstants.typeString;
+                        if (!_UseFlexJson) {
+                            // ERROR: we found an unquoted string and we are not using FlexJson
+                            // NOTE! Error occurred at the START of this item
+                            _status = -199;
+                            AddStatusMessage("Encountered unquoted string: @Line:" + start.lineNumber + " @Position:" + start.linePosition + " (e-199)");
+                        }
+                    }
+                    break;
+                // NOTE: other cases fall through: object, array, null(default if nothing found)
+              } // end switch
+            } // end if (_status != 0)
+
+            // indicate if the new _value is valid
+            if (_status == 0) { _value_valid = true; }
+            else { _value_valid = false; }
+                            
+            // Store original JSON string and mark as "valid"
+            if (_status == 0) {
+                _jsonString = substr(meJsonString, start.absolutePosition, 1 + mePos.absolutePosition - start.absolutePosition);
+                _jsonString_valid = false;
+            }
+            else {
+                _jsonString = meJsonString;
+                _jsonString_valid = false;
+            }
+            if (getSpace != null) { finalSpace = getSpace.ToString(); }
+            EndPosition = mePos;
+
+            return (mePos);
+        }
+
+
+        private iesJSON createPartClone(bool keepSP=false,bool keepCM=false) {
+            iesJSON jClone = new iesJSON();
+            jClone.UseFlexJson = UseFlexJson;
+            jClone.ALLOW_SINGLE_QUOTE_STRINGS = ALLOW_SINGLE_QUOTE_STRINGS;
+            if (keepSP || keepCM)
+                {
+                    jClone.keepSpacingAndComments(keepSP, keepCM); // Setup 2 object
+                }
+            return jClone;
+        }
+
+        // DeserializeObject()
+        // *** Look for name:value pairs as a JSON object
+        // NOTE: Parent routine DeserializeMeI() keeps track of the before/after spacing of the object
+        private iesJsonPosition DeserializeObject(ref string meJsonString, iesJsonPosition start, bool keepSP, bool keepCM)
         {
             iesJSON j2;
             iesJSON jNew = null;
-            int pStatus;
-            StringBuilder getSpace = null;
             string Key = "";
-            // *** Look for name:value pairs as a Dictionary object
-            _jsonType = "object";
-
+            char c;
+            
             System.Collections.Generic.List<Object> v = new System.Collections.Generic.List<Object>();
-            endpos = endpos + 1; // *** IMPORTANT! Move past { symbol
-            pStatus = 1;
+            iesJsonPosition mePos = start; 
+            mePos.increment(); // *** IMPORTANT! Move past { symbol
+            bool skipToNext;
 
-            if (keepSP || keepCM) { getSpace = new StringBuilder(); }
-            do
+            int safety = 99999;
+            while (true)
             {
-                //j2=null;
-                findnext(keepSP, keepCM, ref getSpace);
+                skipToNext = false;
 
-                // *** Check if we are past the end of the string
-                if (endpos >= _jsonString.Length)
-                {
-                    StatusErr(-15, "Past end of string before we found the } symbol as the end of the object @Line:" + currLine(endpos) + " @Position:" + currLinePos(endpos) + " (e-15)");
-                    _value = v;
-                    if (keepSP || keepCM) { AddSpaceAndClear(_keep, "finalSpace", ref getSpace); } // Store the final space/comments somewhere
-                    return;
+                // *** Get KEY: This MUST be a string with the name of the parameter - must end with :
+                // NOTE: We throw this object away later!
+                // Space/comments before the key are preSpace
+                j2 = createPartClone(keepSP,keepCM);
+                iesJsonPosition newPos = j2.DeserializeMeI(ref meJsonString, mePos, true, true, ':', ',', '}');  // finding a } means there are no more items in the object
+
+                if (j2.Status == 0 && j2.jsonType == iesJsonConstants.typeNull) {
+                    // special case where item is NULL/BLANK - ok to skip...
+                    c = meJsonString[newPos.absolutePosition];
+                    if (c == ',' || c == '}') { 
+                        mePos=newPos;
+                        skipToNext=true; 
+                        }
+                    else {
+                        StatusErr(-18, "Failed to find key in key:value pair @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition + " (e-18) [" + j2.StatusMessage + "]");
+                        break;
+                    }
                 }
-
-                switch (pStatus)
+                else if (j2.Status != 0)
                 {
-                    case 1:
-                        // *** Create new object now so we can add things like preSpace
-                        jNew = new iesJSON();
-                        jNew.UseFlexJson = UseFlexJson;
-                        jNew.ALLOW_SINGLE_QUOTE_STRINGS = ALLOW_SINGLE_QUOTE_STRINGS;
-                        if (keepSP || keepCM)
-                        {
-                            jNew.keepSpacingAndComments(keepSP, keepCM); // Setup _keep object
-                            AddSpaceAndClear(jNew._keep, "preKey", ref getSpace);
-                        }
+                    /******* blank should now come back as null 
+                    if (j2.Status == -11)
+                    {
+                        // *** This is actually legitimate.  All white space can indicate an empty object.  For example {}  (this is for all cases, not just FlexJson)
+                        // *** Here we are lenient and also allow a missing parameter.  For example {,
+                        mePos=newPos;
+                        c = meJsonString[mePos.absolutePosition];
+                        if (c == ',' || c == '}') { skipToNext=true; }
+                    }
+                    else
+                    {
+                        */
+                        StatusErr(-19, "Failed to find key in key:value pair @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition + " (e-19) [" + j2.StatusMessage + "]");
+                        break;
+                   // }
+                }
+                else if (j2.jsonType != "string") {
+                    StatusErr(-19, "Key name in key:value pair must be a string @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition  + " (-e19)");
+                    break;
+                }
+                else {
+                    // capture the white space/comments here 
+                    if (!string.IsNullOrWhiteSpace(j2.preSpace)) { preKey = j2.preSpace; }
+                    if (!string.IsNullOrWhiteSpace(j2.finalSpace)) { postKey = j2.finalSpace; }
+                    Key = j2.ValueString;
+                    mePos = newPos;
+                }
+                
+                j2 = null;
 
-                        // *** Get KEY: This MUST be a string with the name of the parameter
-                        // NOTE: We throw this object away later!
-                        // Space/comments before the key are preSpace
-                        j2 = new iesJSON();
-                        j2.UseFlexJson = UseFlexJson;
-                        j2.ALLOW_SINGLE_QUOTE_STRINGS = ALLOW_SINGLE_QUOTE_STRINGS;
-                        if (keepSP || keepCM)
-                        {
-                            j2.keepSpacingAndComments(keepSP, keepCM); // Setup 2 object
-                        }
+                if (!skipToNext) {
+                    char cColon = meJsonString[mePos.absolutePosition];
+                    // *** Consume the :
+                    if (cColon!=':') {
+                        StatusErr(-16, "Expected : symbol in key:value pair @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition  + " (e-16)");
+                        break;
+                    }
+                    mePos.increment();
 
-                        j2.Deserialize(_jsonString, endpos, true);
 
-                        if (j2.Status != 0)
-                        {
-                            if (j2.Status == -11)
-                            {
-                                // *** This is actually legitimate.  All white space can indicate an empty object.  For example {}
-                                // *** Here we are lenient and also allow a missing parameter.  For example {,
-                                pStatus = 4;
-                            }
-                            else
-                            {
-                                StatusErr(-18, "Failed to find parameter name in parameter:value pair @Line:" + currLine(endpos) + " @Position:" + currLinePos(endpos) + " (e-18) [" + j2.StatusMessage + "]");
-                            }
-                        }
-                        else
-                        {
-                            if (j2.jsonType != "string")
-                            {
-                                StatusErr(-19, "Parameter name in parameter:value pair must be a quoted string @Line:" + currLine(endpos) + " @Position:" + currLinePos(endpos) + " (-e19)");
-                            }
-                            else
-                            {
-                                Key = j2.ValueString;
-                                endpos = j2.endpos;
-                                pStatus = 2;
-                            }
-                        }
-                        j2 = null;
+                    // *** Expecting value after the : symbol in value/pair combo
+                    // Space/comments here are after the separator
+                    jNew = createPartClone(keepSP,keepCM);
+                    iesJsonPosition finalPos = jNew.DeserializeMeI(ref meJsonString, mePos, true, false, ',', '}');
+
+                    // Check for blank=null (return status -11 and _jsonType=null)
+                    if ((jNew.Status == -11) && (jNew.jsonType == "null") && (_UseFlexJson == true))
+                    {
+                        // Note: jNew.status=-11 indicates nothing was found where there should have been a value - for FLEX JSON this is legitimate.
+                        jNew._status = 0; // this is OK
+                    }
+                    if (jNew.Status != 0)
+                    {
+                        StatusErr(-21, "Failed to find value in key:value pair. @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition  + " (e-21) [" + jNew.StatusMessage + "]");
                         break;
-                    case 2:
-                        // Expecting : symbol in value/pair combo
-                        // Space/comments here are before the separator
-                        if (keepSP || keepCM) { AddSpaceAndClear(jNew._keep, "postKey", ref getSpace); }
-                        if (substr(_jsonString, endpos, 1) != ":")
-                        {
-                            StatusErr(-16, "Expected : symbol in parameter:value pair @Line:" + currLine(endpos) + " @Position:" + currLinePos(endpos) + " (e-16)");
-                        }
-                        else
-                        {
-                            endpos = endpos + 1;
-                            pStatus = 3;
-                        }
+                    }
+                    else
+                    {
+                        // Note: Above, jNew.status=-11 indicates nothing was found where there should have been a value - for FLEX JSON this is legitimate.
+                        // *** For all cases: object, array, string, number, boolean, or null
+                        jNew.Parent = this;
+                        jNew._key = Key;
+                        v.Add(jNew);  // FUTURE: IS THIS WRONG? SHOULD WE CHECK TO SEE IF THE KEY ALREADY EXISTS? AS IS, THE FIRST VALUE WILL "overshadow" ANY SUBSEQUENT VALUE. MAYBE THIS IS OK.
+                        mePos = finalPos;
+                    }
+                            
+                    jNew=null;
+
+                    // *** Check if we are past the end of the string
+                    if (mePos.absolutePosition >= meJsonString.Length)
+                    {
+                        StatusErr(-15, "Past end of string before we found the } symbol as the end of the object @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition  + " (e-15)");
                         break;
-                    case 3:
-                        // Expecting value after the : symbol in value/pair combo
-                        // Space/comments here are after the separator
-                        // jNew should already be setup when we found the "key"
-                        if (jNew == null)
-                        {
-                            StatusErr(-23, "System error. JSON object not initiated @Line:" + currLine(endpos) + " @Position:" + currLinePos(endpos) + " (e-23)");
-                        }
-                        else
-                        {
-                            // jNew should already be setup when we found the "key"
-                            //jNew=new iesJSON();
-                            //jNew.UseFlexJson=UseFlexJson;
-                            //jNew.ALLOW_SINGLE_QUOTE_STRINGS=ALLOW_SINGLE_QUOTE_STRINGS;
-                            if (keepSP || keepCM)
-                            {
-                                //jNew.keepSpacingAndComments(keepSP,keepCM); // Setup _keep object
-                                AddSpaceAndClear(jNew._keep, "preSpace", ref getSpace);
-                            }
-                            jNew.Deserialize(_jsonString, endpos, true);
-                            int newendpos = jNew.endpos;
-                            // Check for blank=null (return status -11 and _jsonType=null)
-                            if ((jNew.Status == -11) && (jNew.jsonType == "null") && (_UseFlexJson == true))
-                            {
-                                // Note: jNew.status=-11 indicates nothing was found where there should have been a value - for FLEX JSON this is legitimate.
-                                //jNew=CreateItem(null);
-                                jNew._status = 0; // this is OK
-                            }
-                            if (jNew.Status != 0)
-                            {
-                                StatusErr(-21, "Failed to find value in parameter:value pair. @Line:" + currLine(endpos) + " @Position:" + currLinePos(endpos) + " (e-21) [" + jNew.StatusMessage + "]");
-                            }
-                            else
-                            {
-                                // Note: Above, jNew.status=-11 indicates nothing was found where there should have been a value - for FLEX JSON this is legitimate.
-                                // *** For all cases: object, array, string, number, boolean, or null
-                                jNew.Parent = this;
-                                jNew._key = Key;  // This must be done after serialization
-                                v.Add(jNew);  // FUTURE: THIS IS WRONG!  WE MUST CHECK TO SEE IF THE KEY ALREADY EXISTS!
-                                endpos = newendpos;
-                                pStatus = 4;
-                            }
-                        }
-                        //jNew=null; // This is needed later to store postSpace
-                        break;
-                    case 4:
-                        // Expecting a , to indicate next element, or } to end object
-                        // Space/comments here are after the value
-                        if (keepSP || keepCM)
-                        {
-                            if (jNew != null) { AddSpaceAndClear(jNew._keep, "postSpace", ref getSpace); }
-                            else { AddSpaceAndClear(_keep, "postSpace", ref getSpace); }
-                        }
-                        string c;
-                        c = substr(_jsonString, endpos, 1);
-                        if (c != "," && c != "}")
-                        {
-                            StatusErr(-17, "Expected , symbol to separate value pairs @Line:" + currLine(endpos) + " @Position:" + currLinePos(endpos) + " (e-17)");
-                        }
-                        else
-                        {
-                            endpos = endpos + 1;
-                            // *** if we found } then successful completion of deserializing the object
-                            if (c == "}") { _value = v; return; }
-                            pStatus = 1;
-                        }
-                        jNew = null;  // Clear for next object
-                        break;
-                } //End Select
-            } while (_status == 0); // Do Loop
-            jNew = null;
+                    }
+                } // end if (!skipToNext)
+
+                char cNext = meJsonString[mePos.absolutePosition];
+                // *** Check if we reached the end of the object
+                if (cNext == '}') { break; } // return. we are done buildng the JSON object
+                // *** Comma required between items in object
+                if (cNext != ',') { 
+                   StatusErr(-17, "Expected , symbol to separate value pairs @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition  + " (e-17)");
+                   break;
+                }
+                mePos.increment();
+
+                safety--;
+                if (safety<=0) { 
+                    StatusErr(-117, "Max deserialization iterations reached in DeserializeObject. @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition  + " (e-117)");
+                    break;
+                }
+            } // end do
+
             _value = v;
-        } // End Deserialize_object()
+            jNew=null;
+            j2=null;
+            return mePos; // negative value indicated an error
+                
+        } // End DeserializeObject2()
 
-        private void DeserializeArray(bool keepSP, bool keepCM)
+
+        // DeserializeArray()
+        // *** Look for comma separated value list as a JSON array
+        // NOTE: Parent routine DeserializeMeI() keeps track of the before/after spacing of the array
+        private iesJsonPosition DeserializeArray(ref string meJsonString, iesJsonPosition start, bool keepSP, bool keepCM)
         {
-            iesJSON j2 = null;
-            int pStatus;
-            string c;
-            StringBuilder getSpace = null;
-            // *** Create an array of objects.  Each can be a value(string,number,boolean,object,array,null)
-            _jsonType = "array";
-
+            iesJSON jNew = null;
+            
             System.Collections.Generic.List<Object> v = new System.Collections.Generic.List<Object>();
-            endpos = endpos + 1; // *** IMPORTANT! Move past [ symbol
-            pStatus = 1;
-            if (keepSP || keepCM) { getSpace = new StringBuilder(); }
-            do
+            iesJsonPosition mePos = start; 
+            mePos.increment(); // *** IMPORTANT! Move past [ symbol
+
+            int safety = 99999;
+            while (true)
             {
-                //j2 = null; // do not clear j2 between status 1 and 2
-                findnext(keepSP, keepCM, ref getSpace);
+                // *** Expecting value
+                jNew = createPartClone(keepSP,keepCM);
+                iesJsonPosition finalPos = jNew.DeserializeMeI(ref meJsonString, mePos, true, false, ',', ']');
+
+                // Check for blank=null (return status -11 and _jsonType=null)
+                /***** BLANK/NULL should now come back as a NULL with an OK status...
+                if (jNew.Status == -11)
+                {
+                    // *** This is actually legitimate.  All white space can indicate an empty array.  For example []
+                    // *** Here we are lenient and also allow a missing item.
+                    // *** For example [,  NOTE! In this case, the missing item does NOT count as an element of the array!
+                    // *** if you want to skip an item legitimately, use NULL  For example [NULL,   or [,
+                    jNew._status = 0; // this is OK
+                }
+                */
+                if (jNew.Status != 0)
+                {
+                    StatusErr(-21, "Failed to find value in array pair. @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition  + " (e-21) [" + jNew.StatusMessage + "]");
+                    break;
+                }
+                else
+                {
+                    // Note: Above, jNew.status=-11 indicates nothing was found where there should have been a value - for FLEX JSON this is legitimate.
+                    // *** For all cases: object, array, string, number, boolean, or null
+                    jNew.Parent = this;
+                    v.Add(jNew);  // FUTURE: IS THIS WRONG? SHOULD WE CHECK TO SEE IF THE KEY ALREADY EXISTS? AS IS, THE FIRST VALUE WILL "overshadow" ANY SUBSEQUENT VALUE. MAYBE THIS IS OK.
+                    mePos = finalPos;
+                }
+                        
+                jNew=null;
 
                 // *** Check if we are past the end of the string
-                if (endpos > _jsonString.Length)
+                if (mePos.absolutePosition >= meJsonString.Length)
                 {
-                    StatusErr(-41, "Past end of string before we found the ] symbol as the end of the object @Line:" + currLine(endpos) + " @Position:" + currLinePos(endpos) + " (e-41)");
-                    _value = v;
-                    if (keepSP || keepCM) { AddSpaceAndClear(_keep, "finalSpace", ref getSpace); } // Store the final space/comments somewhere
-                    return;
+                    StatusErr(-115, "Past end of string before we found the ] symbol as the end of the object @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition  + " (e-115)");
+                    break;
                 }
 
-                switch (pStatus)
-                {
-                    case 1:
-                        // *** This should be a JSON item: object, array, string, boolean, number, or null
-                        // Space/comments located here are preSpace
-                        //if (keepSP || keepCM) { AddSpaceAndClear(_keep, "preSpace", ref getSpace); } // Wrong: This was prepending the space before the [ symbol
-                        j2 = new iesJSON();
-                        j2.UseFlexJson = UseFlexJson;
-                        j2.ALLOW_SINGLE_QUOTE_STRINGS = ALLOW_SINGLE_QUOTE_STRINGS;
-                        if (keepSP || keepCM)
-                        {
-                            j2.keepSpacingAndComments(keepSP, keepCM); // Setup _keep object
-                            AddSpaceAndClear(j2._keep, "preSpace", ref getSpace);
-                        }
-                        j2.Deserialize(_jsonString, endpos, true);
-                        if (j2.Status != 0)
-                        {
-                            if (j2.Status == -11)
-                            {
-                                // *** This is actually legitimate.  All white space can indicate an empty array.  For example []
-                                // *** Here we are lenient and also allow a missing item.
-                                // *** For example [,  NOTE! In this case, the missing item does NOT count as an element of the array!
-                                // *** if you want to skip an item legitimately, use NULL  For example [NULL,
-                                pStatus = 2;
-                            }
-                            else
-                            {
-                                StatusErr(-42, "Failed to find item in JSON array @Line:" + currLine(endpos) + " @Position:" + currLinePos(endpos) + " (e-42) [" + j2.StatusMessage + "]");
-                            }
-                        }
-                        else
-                        {
-                            // *** For all cases: object, array, string, number, boolean, null - keep the entire JSON object.
-                            j2.Parent = this;
-                            v.Add(j2);
-                            endpos = j2.endpos;
-                            pStatus = 2;
-                        }
-                        //j2=null; // this object is needed below to store postSpace
-                        break;
-                    case 2:
-                        // Expecting a , to indicate next element, or ] to end array
-                        // Space/comments here are after the value
-                        if (keepSP || keepCM)
-                        {
-                            if (j2 != null) { AddSpaceAndClear(j2._keep, "postSpace", ref getSpace); }
-                            else { AddSpaceAndClear(_keep, "postSpace", ref getSpace); }
-                        }
-                        c = substr(_jsonString, endpos, 1);
-                        if (c != "," && c != "]")
-                        {
-                            StatusErr(-43, "Expected , symbol to separate value in JSON array @Line:" + currLine(endpos) + " @Position:" + currLinePos(endpos) + " (e-43)");
-                        }
-                        else
-                        {
-                            endpos = endpos + 1;
-                            // *** if we found ] then successful completion of deserializing the object
-                            if (c == "]") { _value = v; return; }
-                            pStatus = 1;
-                        }
-                        j2 = null;
-                        break;
-                } // End Select
-            } while (_status == 0); //Loop
-            j2 = null;
-            _value = v;
-        } // End
+                char cNext = meJsonString[mePos.absolutePosition];
+                // *** Check if we reached the end of the object
+                if (cNext == ']') { break; } // return. we are done buildng the JSON object
+                // *** Comma required between items in object
+                if (cNext != ',') { 
+                   StatusErr(-17, "Expected , symbol to separate value pairs @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition  + " (e-17)");
+                   break;
+                }
+                mePos.increment();
 
+                safety--;
+                if (safety<=0) { 
+                    StatusErr(-119, "Max deserialization iterations reached in DeserializeObject. @Line:" + mePos.lineNumber + " @Position:" + mePos.linePosition  + " (e-119)");
+                    break;
+                }
+            } // end do
+
+            _value = v;
+            jNew=null;
+            return mePos; // negative value indicated an error
+                
+        } // End DeserializeArray()
+
+
+        // NO LONGER VALID...
         private void AddSpaceAndClear(iesJSON toObj, string toParam, ref StringBuilder getSpace)
         {
+            // FUTURE: REMOVE THIS FUNCTION
+            // REPLACE WITH preSpace = <newValue>; getSpace.Length = 0;
             string newS = getSpace.ToString();
             if (!String.IsNullOrEmpty(newS))
             {
@@ -2185,15 +2484,8 @@ namespace iesJSONlib
             }
         }
 
-        // Store the current line/position into the _keep object
-        private void AddLinePosition(iesJSON toObj, int AbsolutePosition)
-        {
-            toObj.AddToObjBase("AbsolutePosition", AbsolutePosition + 1);
-            toObj.AddToObjBase("LineNumber", currLine(AbsolutePosition));
-            toObj.AddToObjBase("LinePosition", currLinePos(AbsolutePosition));
-        }
-
-        // During the parse process, calculate the current line number
+        // NOTE: THIS ROUTINE MIGHT BE USED IF START POSITION IS CALLED WITH A # > 0
+/*
         private int currLine(int AbsolutePosition)
         {
             return currLine(AbsolutePosition, ref _jsonString);
@@ -2201,7 +2493,7 @@ namespace iesJSONlib
 
         private static int currLine(int AbsolutePosition, ref string js)
         {
-            string noCarriageReturns = iesJSONutilities.Left(js, AbsolutePosition).Replace("\n", "");  // careful not to count \r\n as two lines
+            string noCarriageReturns = iesJSONutilities.Left(js, AbsolutePosition).Replace("\n", "");  // careful not to count NEWLINE(\r\n) as two lines
             int lineNumber = AbsolutePosition - noCarriageReturns.Length;
             return (lineNumber + 1);
         }
@@ -2221,75 +2513,8 @@ namespace iesJSONlib
             }
             return (AbsolutePosition - lastPos);
         }
+*/
 
-        private void findnext(bool keepSP, bool keepCM, ref StringBuilder keepSpace)
-        {
-            string c; int m;
-            m = 0;
-            while (endpos < _jsonString.Length)
-            {
-                c = substr(_jsonString, endpos, 1);
-                if (c == "[")
-                { // DEBUG 
-                    string debug_c = substr(_jsonString, endpos, 100); // DEBUG
-                    if (debug_c.IndexOf("Pulled") > 0)
-                    {
-                        c = c;
-                    }
-                } // DEBUG
-                if (m == 0)
-                {  // MODE 0 = outside of comment
-                    if (c == "/")
-                    {
-                        if (substr(_jsonString, endpos + 1, 1) == "*")
-                        {
-                            m = 1;
-                            endpos += 1;
-                            if (keepCM) { keepSpace.Append("/*"); }
-                        }
-                        else if (substr(_jsonString, endpos + 1, 1) == "/")
-                        {
-                            m = 2;
-                            endpos += 1;
-                            if (keepCM) { keepSpace.Append("//"); }
-                        }
-                    }
-                    if (m == 0)
-                    {
-                        if (!(c == " " || c == "\t" || c == "\n" || c == (Convert.ToChar(10) + "") || c == (Convert.ToChar(13) + ""))) { return; }
-                        if (keepSP) { keepSpace.Append(c); }
-                    }
-                }
-                else
-                {
-                    // MODE 1 OR 2 = inside comment
-                    //if (m==1 && c=="*") {
-                    if ((m == 1 || m == 2) && c == "*")
-                    { // DEBUG TEMP REPLACE LINE ABOVE
-                        if (substr(_jsonString, endpos + 1, 1) == "/")
-                        {
-                            m = 0;
-                            endpos += 1;
-                            if (keepCM) { keepSpace.Append("*/"); }
-                        }
-                    }
-                    else
-                    {
-                        string capp = c;
-                        if (m == 2 && (c == (Convert.ToChar(10) + "") || c == (Convert.ToChar(13) + "")))
-                        {
-                            m = 0;
-                            // Check if we need to handle \r\n as a line feed.
-                            string c2 = substr(_jsonString, endpos + 1, 1);
-                            if (c == (Convert.ToChar(10) + "") && c2 == (Convert.ToChar(13) + "")) { capp += c2; endpos += 1; }
-                        }
-                        if (keepCM) { keepSpace.Append(capp); }
-                        //if (keepCM) { keepSpace.Append("[" + capp + "]"); } // DEBUG TEMP REPLACE LINE ABOVE
-                    }
-                }
-                endpos = endpos + 1;
-            } //Loop
-        } // End
 
         private void findnextChr(string iStr, int ptr)
         {
@@ -2332,71 +2557,6 @@ namespace iesJSONlib
             } //Loop
         } // End findnextChr()
 
-        private void findnumber()
-        {  // FUTURE: REMOVE THIS ROUTINE?  IS IT USED ANYMORE?
-            string c; bool brk = false;
-            do
-            {
-                if (endpos >= _jsonString.Length) { break; }
-                c = substr(_jsonString, endpos, 1);
-                switch (c)
-                {
-                    case "0":
-                    case "1":
-                    case "2":
-                    case "3":
-                    case "4":
-                    case "5":
-                    case "6":
-                    case "7":
-                    case "8":
-                    case "9":
-                    case "+":
-                    case "-":
-                    case "e":
-                    case "E":
-                    case ".":
-                        break;
-                    default:
-                        return;
-                }
-                endpos = endpos + 1;
-            } while (!brk);
-        } // End
-
-        private void findstring()
-        {  // Ends with :,}] and stops at a /* comment */ if it is FLEX JSON
-            string c; bool brk = false;
-            do
-            {
-                if (endpos >= _jsonString.Length) { break; }
-                c = substr(_jsonString, endpos, 1);
-                if ((c == ":") || (c == ",") || (c == "}") || (c == "]") || c == "\n" || c == (Convert.ToChar(10) + "") || c == (Convert.ToChar(13) + "")) { return; }
-                if (_UseFlexJson)
-                {
-                    if (c == "/")
-                    {
-                        if (substr(_jsonString, endpos + 1, 1) == "*") { return; }
-                        if (substr(_jsonString, endpos + 1, 1) == "/") { return; }
-                    }
-                } //START of a comment
-                endpos = endpos + 1;
-            } while (!brk);
-        } // End
-
-        // FUTURE: REMOVE THIS ROUTINE?  IS IT USED ANYMORE?
-        private void findcommentend()
-        {  // Starts with /* and ends with */ if it is FLEX JSON (assume we already found the start)
-            string c; bool brk = false;
-            do
-            {
-                if (endpos >= _jsonString.Length) { break; }
-                c = substr(_jsonString, endpos, 1);
-                if (c == "*") { if (substr(_jsonString, endpos + 1, 1) == "/") { return; } } //END of a comment
-                endpos = endpos + 1;
-            } while (!brk);
-        } // End
-
         static public bool IsHex4(string sVal)
         {
             int k;
@@ -2438,16 +2598,14 @@ namespace iesJSONlib
             System.Text.StringBuilder s = new System.Text.StringBuilder();
             int i, k;
             string preKey = "", postKey = "";
-            if (stats != null) { IncStats("stat_SerializeMe"); }
+            if (trackingStats) { IncStats("stat_SerializeMe"); }
             if (_status != 0) { return -1; }
             if (!ValidateValue()) { return -1; }
             try
             {
-                if (_keep != null)
-                {
-                    // Here we ignore keepSpacing/keepComments - these flags are only used during the deserialize process
-                    s.Append(_keep.GetStr("preSpace")); // preSpace of overall object/array or item
-                }
+                // Here we ignore keepSpacing/keepComments - these flags are only used during the deserialize process
+                s.Append(preSpace); // preSpace of overall object/array or item
+                
                 switch (_jsonType)
                 {
                     case "object":
@@ -2458,13 +2616,12 @@ namespace iesJSONlib
                             iesJSON o2 = (iesJSON)o;
                             if (i > 0) { s.Append(","); }
                             k = o2.SerializeMe();
-                            if (o2._keep != null)
-                            {
-                                // Here we ignore keepSpacing/keepComments - these flags are only used during the deserialize process
-                                // preSpace and postSpace are already added during the SerializeMe() call above.  Here we add preKye and postKey.
-                                preKey = o2._keep.GetStr("preKey");
-                                postKey = o2._keep.GetStr("postKey");
-                            }
+                           
+                            // Here we ignore keepSpacing/keepComments - these flags are only used during the deserialize process
+                            // preSpace and postSpace are already added during the SerializeMe() call above.  Here we add preKye and postKey.
+                            preKey = this.preKey;
+                            postKey = this.postKey;
+                            
                             if ((k == 0) && (o2.Status == 0)) { s.Append(preKey + "\"" + o2.Key.ToString() + "\"" + postKey + ":" + o2.jsonString); }
                             else
                             {
@@ -2505,11 +2662,9 @@ namespace iesJSONlib
                         s.Append(this.ValueString);
                         break;
                 }
-                if (_keep != null)
-                {
-                    s.Append(_keep.GetStr("postSpace") +
-                        _keep.GetStr("finalSpace"));
-                }
+
+                s.Append(finalSpace);  // no longer postSpace
+                
                 _jsonString = s.ToString();
                 _jsonString_valid = true;
             }
@@ -2528,7 +2683,7 @@ namespace iesJSONlib
         // For example, capturing the Response.QueryString collection or Response.Form collection
         public void CopyValues(object objValue)
         {
-            if (stats != null) { IncStats("stat_CopyValues"); }
+            if (trackingStats) { IncStats("stat_CopyValues"); }
             // *** Goes through the "serialize" process, but only fills in the _value and not the _jsonString
             this.Serialize(objValue, true, false);
         } // End
@@ -2557,7 +2712,7 @@ namespace iesJSONlib
         public void Serialize(object objValue, bool BuildValue = true, bool BuildString = true)
         {
             string t;
-            if (stats != null) { IncStats("stat_Serialize"); }
+            if (trackingStats) { IncStats("stat_Serialize"); }
             t = GetObjType(objValue);
 
             this.Clear(false, 1); // *** Clears _value and _jsonString (sets status=0) and also notifies Parent that we have changed
@@ -2871,14 +3026,14 @@ namespace iesJSONlib
                         j2 = new iesJSON();
                         j2.UseFlexJson = UseFlexJson;
                         j2.ALLOW_SINGLE_QUOTE_STRINGS = ALLOW_SINGLE_QUOTE_STRINGS;
-                        j2.Deserialize(strInput, ptr, true);
+                        j2.Deserialize(strInput, ptr, true); // Needs to track meta data (specifically EndPosition)
                         if (j2.Status == 0)
                         {
                             if ((j2.jsonType == "string") || (j2.jsonType == "number"))
                             {
                                 // *** For all cases: Object, Array, String, Number, Boolean, or null
                                 s.Add(j2.Value);
-                                ptr = j2.endpos;
+                                ptr = j2.EndPosition.absolutePosition;
                                 pStatus = 2;
                             }
                             else { pStatus = 3; } // ERROR
@@ -2912,7 +3067,7 @@ namespace iesJSONlib
         public iesJSON GetObj(string strReference)
         {
             object r = null; iesJSON v = null; iesJSON v2 = null; int safety;
-            if (stats != null) { IncStats("stat_GetObj"); }
+            if (trackingStats) { IncStats("stat_GetObj"); }
             // *** Make sure the _value is valid.
             if (!ValidateValue()) { return v; }
 
@@ -2986,7 +3141,7 @@ namespace iesJSONlib
         public iesJSON GetParentObj(string strReference, ref object finalKey)
         {
             object[] r = null; iesJSON v = null; iesJSON v2 = null; int cnt;
-            if (stats != null) { IncStats("stat_GetParentObj"); }
+            if (trackingStats) { IncStats("stat_GetParentObj"); }
             // *** Make sure the _value is valid.
             if (!ValidateValue()) { return v; }
             if (String.IsNullOrEmpty(strReference)) { return Parent; }  // return Parent object (or null if _parent is not set)
@@ -3078,7 +3233,7 @@ namespace iesJSONlib
         public string GetStr(string strReference, string sDefault = "")
         {
             iesJSON v = null; string ret;
-            if (stats != null) { IncStats("stat_GetStr"); }
+            if (trackingStats) { IncStats("stat_GetStr"); }
             ret = sDefault;
             v = GetObj(strReference);
             if (v != null) { ret = v.ValueString; }
@@ -3094,7 +3249,7 @@ namespace iesJSONlib
         public int GetInt(string strReference, int nDefault = 0)
         {
             iesJSON v = null;
-            if (stats != null) { IncStats("stat_GetInt"); }
+            if (trackingStats) { IncStats("stat_GetInt"); }
             int gt = nDefault;
             v = GetObj(strReference);
             if (v == null) { return gt; }
@@ -3123,7 +3278,7 @@ namespace iesJSONlib
         public bool GetBool(string strReference, bool nDefault = false)
         {
             iesJSON v = null;
-            if (stats != null) { IncStats("stat_GetBool"); }
+            if (trackingStats) { IncStats("stat_GetBool"); }
             bool gt = nDefault;
             v = GetObj(strReference);
             if (v == null) { return gt; }
@@ -3152,7 +3307,7 @@ namespace iesJSONlib
         public double GetDouble(string strReference, double nDefault = 0)
         {
             iesJSON v = null;
-            if (stats != null) { IncStats("stat_GetDouble"); }
+            if (trackingStats) { IncStats("stat_GetDouble"); }
             double gt = nDefault;
             v = GetObj(strReference);
             if (v == null) { return gt; }
@@ -3179,7 +3334,7 @@ namespace iesJSONlib
         public string GetJSONstr(string strReference, string strDefault = "")
         {
             iesJSON v = null;
-            if (stats != null) { IncStats("stat_GetJSONStr"); }
+            if (trackingStats) { IncStats("stat_GetJSONStr"); }
             string g = strDefault;
             v = GetObj(strReference);
             switch (v.jsonType)
@@ -3200,7 +3355,7 @@ namespace iesJSONlib
         public bool RemoveAt(string strReference, int AtPosition)
         {
             iesJSON v = null;
-            if (stats != null) { IncStats("stat_RemoveAt"); }
+            if (trackingStats) { IncStats("stat_RemoveAt"); }
             v = GetObj(strReference);
             if (v == null) { return false; }
             return v.RemoveAtBase(AtPosition);
@@ -3210,7 +3365,7 @@ namespace iesJSONlib
         // WARNING: should NOT remove from an iesJSON Object that you are iterating through (it messes with the enum)
         public bool RemoveAtBase(int AtPosition)
         {
-            if (stats != null) { IncStats("stat_RemoveAtBase"); }
+            if (trackingStats) { IncStats("stat_RemoveAtBase"); }
             if (this._jsonType == "array" || this._jsonType == "object")
             {
                 System.Collections.Generic.List<Object> a;
@@ -3233,7 +3388,7 @@ namespace iesJSONlib
         public int AddToArray(string strReference, object oItem, int atPosition = -1)
         {
             iesJSON v = null; string t = "";
-            if (stats != null) { IncStats("stat_AddToArray"); }
+            if (trackingStats) { IncStats("stat_AddToArray"); }
             int ret = -1; // *** Default=Error
             v = GetObj(strReference);
             if (v == null) { return ret; }
@@ -3261,7 +3416,7 @@ namespace iesJSONlib
         //public int AddToArrayBase(object oItem, int atPosition) {
         public int AddToArrayBase(iesJSON oJ, int atPosition = -1)
         {
-            if (stats != null) { IncStats("stat_AddToArrayBase"); }
+            if (trackingStats) { IncStats("stat_AddToArrayBase"); }
             int ret = -1;
             if (_status != 0) { return ret; }
             if ((_jsonType != "array") && (_jsonType != "object")) { return ret; } // *** Requires that this is a json "array" or json "object"
@@ -3287,7 +3442,7 @@ namespace iesJSONlib
         public int AddItem(object oItem, int atPosition = -1)
         {
             string t = "";
-            if (stats != null) { IncStats("stat_AddItem"); }
+            if (trackingStats) { IncStats("stat_AddItem"); }
             t = GetObjType(oItem);
             if (t == "iesjson")
             {
@@ -3340,7 +3495,7 @@ namespace iesJSONlib
         //public int AddToObj(string strReference,string sParam, object oItem, int fMode) {
         public int AddToObj(string strReference, string sParam, object oItem, int fMode = 3)
         {
-            if (stats != null) { IncStats("stat_AddToObj"); }
+            if (trackingStats) { IncStats("stat_AddToObj"); }
             iesJSON v = null;
             int ret = -1; // *** Default=Error
             if (_status != 0) { return ret; }
@@ -3357,7 +3512,7 @@ namespace iesJSONlib
         //public int AddToObjBase(string sParam, object  oItem, int fMode) {
         public int AddToObjBase(string sParam, object oItem, int fMode = 3)
         {
-            if (stats != null) { IncStats("stat_AddToObjBase"); }
+            if (trackingStats) { IncStats("stat_AddToObjBase"); }
             string t = "";
             int ret = -1; // *** Default=Error
                           //if (this.jsonType!="object") { return ret; }  // This check is done later in AddToObjBase2() - Can't add to Object if strReference is not an object!
@@ -3381,7 +3536,7 @@ namespace iesJSONlib
 
         public int AddToObjBase222(string sParam, object oItem, int fMode, ref string tmpStatusMsg2)
         {
-            if (stats != null) { IncStats("stat_AddToObjBase"); }
+            if (trackingStats) { IncStats("stat_AddToObjBase"); }
             string t = "";
             int ret = -1; // *** Default=Error
                           //if (this.jsonType!="object") { return ret; }  // This check is done later in AddToObjBase2() - Can't add to Object if strReference is not an object!
@@ -3404,7 +3559,7 @@ namespace iesJSONlib
 
         private int AddToObjBase333(iesJSON oJ, int fMode, ref string tmpStatusMsg2)
         {
-            if (stats != null) { IncStats("stat_AddToObjBase2"); }
+            if (trackingStats) { IncStats("stat_AddToObjBase2"); }
             int ret = -1, k;
             System.Collections.Generic.List<Object> v;
             if (_status != 0) { return ret; }
@@ -3453,7 +3608,7 @@ namespace iesJSONlib
         //private int AddToObjBase2(object oJ, int fMode) {
         private int AddToObjBase2(iesJSON oJ, int fMode = 3)
         {
-            if (stats != null) { IncStats("stat_AddToObjBase2"); }
+            if (trackingStats) { IncStats("stat_AddToObjBase2"); }
             int ret = -1, k;
             System.Collections.Generic.List<Object> v;
             if (_status != 0) { return ret; }
@@ -3501,7 +3656,7 @@ namespace iesJSONlib
 
         public int RemoveFromObj(string strReference, string sParam)
         {
-            if (stats != null) { IncStats("stat_RemoveFromObj"); }
+            if (trackingStats) { IncStats("stat_RemoveFromObj"); }
             // return AddToObj(strReference, sParam, "", -1); // Old method
             iesJSON v = null;
             v = GetObj(strReference);
@@ -3514,7 +3669,7 @@ namespace iesJSONlib
         // WARNING: should NOT remove from an iesJSON Object that you are iterating through (it messes with the enum)
         public int RemoveFromBase(string sParam)
         {
-            if (stats != null) { IncStats("stat_RemoveFromBase"); }
+            if (trackingStats) { IncStats("stat_RemoveFromBase"); }
             // return AddToObjBase(sParam, "", -1); // Old method
 
             // *** Requires that this is a json "object"
@@ -3590,7 +3745,7 @@ namespace iesJSONlib
         public void CreateStats()
         {
             if (NoStatsOrMsgs) { return; }
-            if (stats == null) { TrackStats = true; }
+            if (!trackingStats) { TrackStats = true; }  // toggle if needed
             if ((_status != 0) || (!_value_valid)) { return; } // Cannot track stats for child objects if the object is invalid.
                                                                // Do the same for all child objects
             if ((_jsonType == "object") || (_jsonType == "array"))
@@ -3607,7 +3762,7 @@ namespace iesJSONlib
         //public void ClearStats(bool ContinueToTrackStats) {
         public void ClearStats(bool ContinueToTrackStats = true)
         {
-            stats = null;
+            if (_meta != null) { _meta.stats = null; }
             if ((ContinueToTrackStats) && (!NoStatsOrMsgs)) { TrackStats = true; } else { TrackStats = false; }
             if ((_status != 0) || (!_value_valid)) { return; } // Cannot iterate through an array/object if it is not valid.
             if ((this._jsonType == "object") || (this._jsonType == "array"))
@@ -3632,28 +3787,31 @@ namespace iesJSONlib
         {
             int i;
             if (NoStatsOrMsgs) { return; }
-            if (stats == null) { return; }
-            i = stats.GetInt(stat, 0); // If not found, gets a 0
-            stats.AddToObjBase222(stat, i + 1, 3, ref tmpStatusMsg);  //overwrite existing value
+            if (!trackingStats) { return; } // verifies that _meta.stats exists as an object
+            i = _meta.stats.GetInt(stat, 0); // If not found, gets a 0
+            string newStatusMsg = "";
+            _meta.stats.AddToObjBase222(stat, i + 1, 3, ref newStatusMsg);  //overwrite existing value
+            tmpStatusMsg = newStatusMsg;
         }
 
+        // FUTURE: Replace this with this.statusMsg=...
         // AddStatusMessage()
         // Set _statusMsg to the new message/error string
         // Also add the message to a log in stats object, if stats are being tracked.
         public void AddStatusMessage(string msg)
         {
-            _statusMsg = msg;
+            statusMsg = msg;
             if (NoStatsOrMsgs) { return; }
-            if (stats == null) { return; }
+            if (!trackingStats) { return; } // verifies that _meta.stats exists as an object
 
             // Here we should make the stats error messages an array of error messages.
             // Check if StatusMessages exists in stats
-            if (!stats.Contains("StatusMessages"))
+            if (!_meta.stats.Contains("StatusMessages"))
             {
                 iesJSON k = CreateEmptyArray(); // Create new empty JSON array
-                stats.AddToObjBase("StatusMessages", k);
+                _meta.stats.AddToObjBase("StatusMessages", k);
             }
-            else { stats.AddToArray("StatusMessages", msg); }
+            else { _meta.stats.AddToArray("StatusMessages", msg); }
         }
         //DEFAULT-PARAMETERS
         //public int DeserializeStream(System.IO.StreamReader inStream) { return DeserializeStream(inStream,false); }
@@ -3664,7 +3822,7 @@ namespace iesJSONlib
             int cnt = 0;
             bool keepSP = false;
             System.Text.StringBuilder strjson = new System.Text.StringBuilder();
-            if (_keep != null) { keepSP = this.keepSpacing; }
+            keepSP = this.keepSpacing;
             try
             {
                 // We need to add a line feed to the BEGINNING of each line after line 0 to facilitate KeepSP and // Comments
@@ -3812,21 +3970,21 @@ namespace iesJSONlib
             // Items that are of the same type get compared
             switch (eType1)
             {
-                case jsonTypeEnum_null: // NULL
+                case iesJsonConstants.jsonTypeEnum_null: // NULL
                     return 0; // Two null values are always equal
-                case jsonTypeEnum_number: // Number
+                case iesJsonConstants.jsonTypeEnum_number: // Number
                     double dbl1, dbl2;
                     dbl1 = this.ToDbl();
                     dbl2 = compare2.ToDbl();
                     return dbl1.CompareTo(dbl2);
-                case jsonTypeEnum_string: // String
+                case iesJsonConstants.jsonTypeEnum_string: // String
                     string str1, str2;
                     str1 = this.ToStr();
                     str2 = compare2.ToStr();
                     //this.Parent.tmpStatusMsg += "[COMPARE:" + str1 + ":" + str2 + ":" + str1.CompareTo(str2).ToString() + "]";  // DEBUG
                     //return str1.CompareTo(str2); // Case Sensitive Compare
                     return String.Compare(str1, str2, comparisonType: StringComparison.OrdinalIgnoreCase); // Case Insensitive Compare
-                case jsonTypeEnum_boolean: // Boolean
+                case iesJsonConstants.jsonTypeEnum_boolean: // Boolean
                     bool bool1, bool2;
                     bool1 = this.ToBool();
                     bool2 = compare2.ToBool();
